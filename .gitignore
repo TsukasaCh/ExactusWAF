@@ -1,6 +1,7 @@
 # Binary hasil build
 exactuswaf
 exactuswaf.exe
+exactuswaf-*
 
 # Log
 *.log
