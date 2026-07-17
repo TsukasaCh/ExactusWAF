@@ -1,0 +1,13 @@
+# Binary hasil build
+exactuswaf
+exactuswaf.exe
+
+# Log
+*.log
+
+# File OS
+.DS_Store
+Thumbs.db
+
+# Pengaturan lokal editor/agent
+.claude/

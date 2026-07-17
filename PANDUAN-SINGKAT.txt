@@ -1,0 +1,61 @@
+========================================================================
+  ExactusWAF - PANDUAN SINGKAT (baca ini dulu)
+  Firewall pelindung website. Ikuti 3 langkah di bawah.
+========================================================================
+
+APA INI?
+  Program yang berdiri di depan website Anda dan memblokir serangan hacker
+  sebelum sampai ke website. Cukup dijalankan, tidak perlu keahlian khusus.
+
+
+LANGKAH 1 - ATUR ALAMAT WEBSITE ANDA
+  - Klik kanan file "config.yaml" -> Open With -> Notepad.
+  - Cari baris:  backend: "http://127.0.0.1:3000"
+  - Ganti 3000 dengan port website asli Anda. Simpan (Ctrl+S).
+
+    Contoh: kalau website Anda dibuka di http://localhost:8000
+            maka tulis:  backend: "http://127.0.0.1:8000"
+
+
+LANGKAH 2 - JALANKAN
+  - Klik dua kali file "Jalankan-ExactusWAF.bat".
+  - Akan muncul jendela hitam bertuliskan "ExactusWAF siap". Biarkan terbuka.
+    (Untuk mematikan: tutup jendela itu atau tekan Ctrl+C.)
+
+
+LANGKAH 3 - PAKAI
+  - Buka website Anda lewat alamat:   http://localhost:8080
+  - Untuk memantau (GUI): klik dua kali "Dashboard-ExactusWAF.bat"
+      atau buka di browser:  http://localhost:9090
+      (saat diminta login: user = admin, password = lihat di config.yaml)
+  - Di dashboard Anda bisa lihat REALTIME: aturan apa saja yang terpicu
+    dan total serangan (hit) dari tiap IP.
+
+
+SUDAH SELESAI. Website Anda kini terlindungi.
+
+
+------------------------------------------------------------------------
+KALAU ADA MASALAH
+------------------------------------------------------------------------
+  * Muncul error "socket ... forbidden":
+      Port 8080 dipakai program lain. Buka config.yaml, ubah baris
+      listen menjadi:  listen: "0.0.0.0:8088"  lalu jalankan lagi.
+      (dan akses website lewat http://localhost:8088)
+
+  * Muncul "502 Bad Gateway":
+      Website asli Anda belum menyala. Nyalakan dulu website Anda,
+      pastikan alamat "backend" di config.yaml sudah benar.
+
+  * Ada tamu sah yang ikut terblokir:
+      Buka config.yaml, ubah  mode: block  menjadi  mode: monitor
+      untuk sementara, lalu amati di dashboard.
+
+
+TIPS KEAMANAN
+  - GANTI password dashboard di config.yaml (jangan biarkan "admin123").
+  - Untuk hari pertama, pakai mode: monitor agar tidak ada yang salah blokir,
+    setelah yakin baru ubah ke mode: block.
+
+Butuh detail lebih lengkap? Buka file README.md.
+========================================================================

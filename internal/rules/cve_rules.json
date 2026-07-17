@@ -1,0 +1,276 @@
+{
+  "version": "2026.07",
+  "updated": "2026-07-10",
+  "rules": [
+    {
+      "id": "GEN-SQLI-001",
+      "name": "SQL Injection - UNION/SELECT",
+      "cve": "",
+      "severity": "high",
+      "category": "sqli",
+      "target": "all",
+      "pattern": "(?i)(union[\\s/*]+select|select[\\s/*]+.*[\\s/*]+from|insert[\\s/*]+into|;[\\s]*drop[\\s]+table|' or '1'='1|\" or \"1\"=\"1|or 1=1--|sleep\\(\\d+\\)|benchmark\\(|pg_sleep\\()"
+    },
+    {
+      "id": "GEN-SQLI-002",
+      "name": "SQL Injection - Boolean/Time based",
+      "cve": "",
+      "severity": "high",
+      "category": "sqli",
+      "target": "all",
+      "pattern": "(?i)(waitfor[\\s]+delay|extractvalue\\(|updatexml\\(|load_file\\(|into[\\s]+outfile|information_schema)"
+    },
+    {
+      "id": "GEN-XSS-001",
+      "name": "Cross-Site Scripting (XSS)",
+      "cve": "",
+      "severity": "high",
+      "category": "xss",
+      "target": "all",
+      "pattern": "(?i)(<script[\\s>]|javascript:|onerror[\\s]*=|onload[\\s]*=|onmouseover[\\s]*=|<img[^>]+src[\\s]*=[\\s]*['\"]?[\\s]*javascript|document\\.cookie|<iframe|<svg[^>]+onload|eval\\(|alert\\()"
+    },
+    {
+      "id": "GEN-LFI-001",
+      "name": "Local File Inclusion / Path Traversal",
+      "cve": "",
+      "severity": "high",
+      "category": "traversal",
+      "target": "all",
+      "pattern": "(?i)(\\.\\./\\.\\./|\\.\\.\\\\\\.\\.\\\\|/etc/passwd|/etc/shadow|c:\\\\windows\\\\|boot\\.ini|%2e%2e%2f|%2e%2e/|\\.\\.%2f|php://filter|php://input|file:///|/proc/self/environ)"
+    },
+    {
+      "id": "GEN-RCE-001",
+      "name": "Command Injection",
+      "cve": "",
+      "severity": "critical",
+      "category": "rce",
+      "target": "all",
+      "pattern": "(?i)(;[\\s]*(cat|ls|id|whoami|uname|wget|curl|nc|bash|sh)[\\s;|]|\\|[\\s]*(cat|ls|id|whoami|uname)[\\s]|`[^`]+`|\\$\\([^)]+\\)|&&[\\s]*(cat|ls|id|whoami))"
+    },
+    {
+      "id": "CVE-2021-44228",
+      "name": "Log4Shell - Apache Log4j RCE",
+      "cve": "CVE-2021-44228",
+      "severity": "critical",
+      "category": "rce",
+      "target": "all",
+      "pattern": "(?i)\\$\\{[\\s]*(jndi|::-j|lower:j|upper:j)[\\s]*:?(ldap|ldaps|rmi|dns|nis|iiop|corba|nds|http)?"
+    },
+    {
+      "id": "CVE-2022-22965",
+      "name": "Spring4Shell - Spring Framework RCE",
+      "cve": "CVE-2022-22965",
+      "severity": "critical",
+      "category": "rce",
+      "target": "all",
+      "pattern": "(?i)(class\\.module\\.classLoader|class\\['module'\\]|class\\.classLoader|getRuntime\\(\\)|Tomcat.*pipeline.*first)"
+    },
+    {
+      "id": "CVE-2017-5638",
+      "name": "Apache Struts2 OGNL Injection",
+      "cve": "CVE-2017-5638",
+      "severity": "critical",
+      "category": "rce",
+      "target": "all",
+      "pattern": "(?i)(%\\{[\\s]*\\(#|#context\\[|#_memberAccess|ognl\\.OgnlContext|@java\\.lang\\.Runtime@|multipart/form-data.*%\\{)"
+    },
+    {
+      "id": "CVE-2014-6271",
+      "name": "Shellshock - Bash RCE",
+      "cve": "CVE-2014-6271",
+      "severity": "critical",
+      "category": "rce",
+      "target": "all",
+      "pattern": "\\(\\)[\\s]*\\{[\\s]*:;[\\s]*\\}[\\s]*;"
+    },
+    {
+      "id": "CVE-2021-41773",
+      "name": "Apache HTTP Server Path Traversal & RCE",
+      "cve": "CVE-2021-41773",
+      "severity": "critical",
+      "category": "traversal",
+      "target": "url",
+      "pattern": "(?i)(/cgi-bin/\\.%2e/|\\.%2e/%2e%2e/|/icons/\\.%2e/|%2e%2e%2f%2e%2e%2f)"
+    },
+    {
+      "id": "CVE-2020-14882",
+      "name": "Oracle WebLogic Console RCE",
+      "cve": "CVE-2020-14882",
+      "severity": "critical",
+      "category": "rce",
+      "target": "url",
+      "pattern": "(?i)/console/(css|images)/%252e%252e%252f"
+    },
+    {
+      "id": "CVE-2022-1388",
+      "name": "F5 BIG-IP iControl REST Auth Bypass RCE",
+      "cve": "CVE-2022-1388",
+      "severity": "critical",
+      "category": "rce",
+      "target": "url",
+      "pattern": "(?i)/mgmt/tm/util/(bash|run)"
+    },
+    {
+      "id": "CVE-2021-26084",
+      "name": "Atlassian Confluence OGNL Injection",
+      "cve": "CVE-2021-26084",
+      "severity": "critical",
+      "category": "rce",
+      "target": "all",
+      "pattern": "(?i)(queryString=.*%5c|\\\\u0027\\+.*Runtime|/pages/createpage-entervariables|\\\\u0027.*getClass)"
+    },
+    {
+      "id": "CVE-2018-11776",
+      "name": "Apache Struts2 Namespace OGNL RCE",
+      "cve": "CVE-2018-11776",
+      "severity": "critical",
+      "category": "rce",
+      "target": "url",
+      "pattern": "(?i)(\\$\\{[\\s]*\\(#.*multiply|/\\$\\{.*\\}/|%24%7b.*%7d)"
+    },
+    {
+      "id": "CVE-2019-11510",
+      "name": "Pulse Secure VPN Arbitrary File Read",
+      "cve": "CVE-2019-11510",
+      "severity": "critical",
+      "category": "traversal",
+      "target": "url",
+      "pattern": "(?i)/dana-na/\\.\\./dana/html5acc/|/dana-na/.*\\?/etc/"
+    },
+    {
+      "id": "CVE-2023-34362",
+      "name": "MOVEit Transfer SQL Injection",
+      "cve": "CVE-2023-34362",
+      "severity": "critical",
+      "category": "sqli",
+      "target": "url",
+      "pattern": "(?i)/moveitisapi/moveitisapi\\.dll|/guestaccess\\.aspx|/api/v1/folders/.*/files"
+    },
+    {
+      "id": "CVE-2023-46604",
+      "name": "Apache ActiveMQ OpenWire RCE",
+      "cve": "CVE-2023-46604",
+      "severity": "critical",
+      "category": "rce",
+      "target": "body",
+      "pattern": "(?i)org\\.springframework\\.context\\.support\\.ClassPathXmlApplicationContext"
+    },
+    {
+      "id": "CVE-2024-3400",
+      "name": "Palo Alto PAN-OS GlobalProtect Command Injection",
+      "cve": "CVE-2024-3400",
+      "severity": "critical",
+      "category": "rce",
+      "target": "all",
+      "pattern": "(?i)(SESSID=.*\\.\\./\\.\\./|/ssl-vpn/hipreport\\.esp|/global-protect/portal/css)"
+    },
+    {
+      "id": "CVE-2023-22515",
+      "name": "Atlassian Confluence Privilege Escalation",
+      "cve": "CVE-2023-22515",
+      "severity": "critical",
+      "category": "authbypass",
+      "target": "url",
+      "pattern": "(?i)/(server-info|setup)/setupadministrator\\.action|/server-info\\.action\\?"
+    },
+    {
+      "id": "CVE-2023-3519",
+      "name": "Citrix NetScaler ADC/Gateway RCE",
+      "cve": "CVE-2023-3519",
+      "severity": "critical",
+      "category": "rce",
+      "target": "url",
+      "pattern": "(?i)/gwtest/formssso\\?event=start&target=|/oauth/idp/\\.well-known/openid-configuration"
+    },
+    {
+      "id": "CVE-2024-21887",
+      "name": "Ivanti Connect Secure Command Injection",
+      "cve": "CVE-2024-21887",
+      "severity": "critical",
+      "category": "rce",
+      "target": "url",
+      "pattern": "(?i)/api/v1/totp/user-backup-code/\\.\\./\\.\\./|/api/v1/license/keys-status/"
+    },
+    {
+      "id": "CVE-2022-40684",
+      "name": "Fortinet FortiOS Auth Bypass",
+      "cve": "CVE-2022-40684",
+      "severity": "critical",
+      "category": "authbypass",
+      "target": "all",
+      "pattern": "(?i)/api/v2/cmdb/system/admin.*Forwarded.*by=|Node\\.js.*/api/v2/"
+    },
+    {
+      "id": "CVE-2021-22986",
+      "name": "F5 BIG-IP iControl REST SSRF/RCE",
+      "cve": "CVE-2021-22986",
+      "severity": "critical",
+      "category": "rce",
+      "target": "url",
+      "pattern": "(?i)/mgmt/shared/authn/login|/mgmt/tm/access/bundle-install-tasks"
+    },
+    {
+      "id": "CVE-2024-4577",
+      "name": "PHP-CGI Argument Injection RCE",
+      "cve": "CVE-2024-4577",
+      "severity": "critical",
+      "category": "rce",
+      "target": "url",
+      "pattern": "(?i)(%ADd\\+allow_url_include|%add\\+auto_prepend_file|php-cgi.*%2D%64|/php-cgi/php-cgi\\.exe)"
+    },
+    {
+      "id": "CVE-2023-50164",
+      "name": "Apache Struts2 File Upload Path Traversal",
+      "cve": "CVE-2023-50164",
+      "severity": "critical",
+      "category": "traversal",
+      "target": "all",
+      "pattern": "(?i)(uploadFileName=.*\\.\\./|Upload=.*\\.\\.%2f)"
+    },
+    {
+      "id": "CVE-2022-26134",
+      "name": "Atlassian Confluence OGNL RCE",
+      "cve": "CVE-2022-26134",
+      "severity": "critical",
+      "category": "rce",
+      "target": "url",
+      "pattern": "(?i)%24%7b.*Runtime.*getRuntime|\\$\\{@java\\.lang\\.Runtime@|/%24%7b"
+    },
+    {
+      "id": "SCAN-001",
+      "name": "Pemindai / Alat Serangan Otomatis",
+      "cve": "",
+      "severity": "medium",
+      "category": "scanner",
+      "target": "header",
+      "pattern": "(?i)(sqlmap|nikto|nmap|masscan|nessus|acunetix|netsparker|w3af|dirbuster|gobuster|wpscan|nuclei|zgrab|semrush|paloalto)"
+    },
+    {
+      "id": "SCAN-002",
+      "name": "Percobaan Akses File Sensitif",
+      "cve": "",
+      "severity": "medium",
+      "category": "recon",
+      "target": "url",
+      "pattern": "(?i)(/\\.env|/\\.git/config|/\\.git/HEAD|/wp-config\\.php|/config\\.php\\.bak|/\\.aws/credentials|/\\.ssh/id_rsa|/phpinfo\\.php|/\\.DS_Store|/web\\.config|/\\.htpasswd)"
+    },
+    {
+      "id": "GEN-SSRF-001",
+      "name": "Server-Side Request Forgery (SSRF)",
+      "cve": "",
+      "severity": "high",
+      "category": "ssrf",
+      "target": "all",
+      "pattern": "(?i)(169\\.254\\.169\\.254|metadata\\.google\\.internal|/latest/meta-data/|http://127\\.0\\.0\\.1|http://localhost|gopher://|dict://|file:///)"
+    },
+    {
+      "id": "GEN-XXE-001",
+      "name": "XML External Entity (XXE)",
+      "cve": "",
+      "severity": "high",
+      "category": "xxe",
+      "target": "body",
+      "pattern": "(?i)(<!ENTITY[\\s]+.*SYSTEM|<!DOCTYPE[^>]+SYSTEM|<!ENTITY[\\s]+%[\\s])"
+    }
+  ]
+}

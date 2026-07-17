@@ -1,0 +1,88 @@
+# =====================================================================
+#  ExactusWAF - File Konfigurasi
+#  Edit file ini dengan Notepad biasa. Simpan, lalu restart ExactusWAF.
+# =====================================================================
+
+# Alamat tempat ExactusWAF mendengarkan (yang diakses pengunjung).
+# 0.0.0.0 artinya semua alamat. Port 8080 adalah pintu masuk WAF.
+listen: "0.0.0.0:8080"
+
+# Alamat website/aplikasi ASLI Anda yang ingin dilindungi.
+# Contoh: kalau website Anda jalan di localhost port 3000, tulis http://127.0.0.1:3000
+backend: "http://127.0.0.1:3000"
+
+# Mode kerja WAF:
+#   block   = serangan diblokir (DISARANKAN untuk produksi)
+#   monitor = serangan hanya dicatat, tidak diblokir (untuk uji coba dulu)
+mode: "block"
+
+# ---- Dashboard (halaman pemantauan) ----
+dashboard:
+  enabled: true
+  listen: "127.0.0.1:9090"   # buka di browser: http://127.0.0.1:9090
+  # Ganti password ini! Login pakai user "admin".
+  password: "admin123"
+
+# ---- Pembatasan laju (anti-banjir permintaan / DoS ringan) ----
+rate_limit:
+  enabled: true
+  requests_per_minute: 120   # maksimal permintaan per IP per menit
+  burst: 30                  # lonjakan singkat yang diizinkan
+
+# ---- Daftar IP ----
+# IP di sini SELALU diblokir.
+ip_blocklist: []
+# IP di sini SELALU diizinkan (tidak pernah kena filter). Mis. IP kantor Anda.
+ip_allowlist: []
+
+# ---- Auto-Ban (blokir otomatis penyerang) ----
+# Penyerang yang mengulang serangan akan diblokir sementara secara otomatis.
+# Fitur ini AKTIF tanpa perlu pengaturan tambahan.
+auto_ban:
+  enabled: true
+  max_strikes: 5        # setelah 5 serangan...
+  window_minutes: 10    # ...dalam 10 menit...
+  ban_minutes: 60       # ...pelanggar diblokir selama 60 menit.
+  # scope = dasar pemblokiran. PENTING untuk ISP dengan IP bersama (CGNAT),
+  # seperti Telkomsel/Indosat, di mana ribuan pengguna berbagi satu IP publik.
+  #   ip_ua = blokir kombinasi IP + jenis peramban (DISARANKAN). Pengguna sah
+  #           di IP yang sama TIDAK ikut terblokir karena peramban mereka berbeda
+  #           dari alat serangan.
+  #   ip    = blokir seluruh IP (lebih ketat, TAPI bisa menyeret pengguna lain
+  #           yang kebetulan berbagi IP publik yang sama). Pilih ini hanya bila
+  #           setiap pengunjung Anda dipastikan punya IP sendiri.
+  scope: "ip_ua"
+
+# ---- Header proxy (X-Forwarded-For) ----
+# Setel true HANYA jika ExactusWAF berada DI BELAKANG reverse proxy tepercaya
+# (mis. Nginx, Cloudflare, Load Balancer). Bila WAF langsung menghadap internet,
+# BIARKAN false — kalau tidak, penyerang bisa memalsukan IP untuk menghindari ban
+# atau sengaja membuat IP orang lain terblokir.
+trust_proxy_headers: false
+
+# ---- Notifikasi Telegram (opsional) ----
+# Dapatkan pemberitahuan di HP saat ada IP yang diblokir otomatis.
+# Cara pakai (5 menit):
+#   1. Chat @BotFather di Telegram -> /newbot -> salin "bot_token".
+#   2. Chat @userinfobot -> salin angka "Id" Anda -> isikan ke "chat_id".
+#   3. Kirim satu pesan ke bot baru Anda, lalu set enabled: true.
+notify:
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
+
+# ---- HTTPS (opsional) ----
+# Kalau Anda punya sertifikat, isi path-nya. Kosongkan kalau belum punya.
+tls:
+  enabled: false
+  cert_file: ""
+  key_file: ""
+
+# ---- Rules / Aturan deteksi ----
+# ExactusWAF sudah membawa aturan CVE bawaan. Kalau Anda ingin pakai file
+# aturan sendiri, isi path di bawah. Kosong = pakai aturan bawaan.
+rules_file: ""
+
+# ---- Log ----
+log_file: "exactuswaf.log"   # kosongkan untuk tampil di layar saja
