@@ -89,6 +89,49 @@ Uninstall with `sudo bash install-linux.sh --uninstall`.
 
 ---
 
+## 🎯 Protect a specific app (one command)
+
+Instead of the global front, you can protect an individual app — a Docker
+container, a single nginx site, or any backend — with one command. First install
+just the `exactuswaf` command:
+
+```bash
+sudo bash install-linux.sh --binary-only
+```
+
+Then point it at what you want to protect:
+
+```bash
+# Protect a Docker container (auto-detects its IP and port)
+sudo exactuswaf protect docker my-app
+sudo exactuswaf docker my-app            # shorthand
+
+# Protect one nginx site (moves that site to an internal port, fronts :80)
+sudo exactuswaf protect /etc/nginx/sites-enabled/my-app
+
+# Protect any backend URL / host:port
+sudo exactuswaf protect http://127.0.0.1:3000
+sudo exactuswaf protect 127.0.0.1:3000
+
+# See what's protected / stop protecting
+exactuswaf list
+sudo exactuswaf unprotect my-app
+```
+
+Each protected app runs as its own `systemd` service (`exactuswaf-<name>`) with
+its own dashboard port, and prints the dashboard URL and a generated password.
+
+Useful flags: `--port N` (public port, default 80), `--dash-port N`
+(dashboard port, default 8991), `--container-port N` (for Docker),
+`--mode block|monitor`, `--password P`, `--name N`, and `--foreground` to run in
+the current terminal instead of installing a service.
+
+> Docker: ExactusWAF forwards to the container's internal IP:port, so bind the
+> container to `127.0.0.1` (or don't publish its port) to make sure traffic can't
+> skip the WAF.
+
+---
+
 ## 🐳 Run with Docker (Windows Server / Windows containers)
 
 > The included `Dockerfile` and `docker-compose.yml` target **Windows containers**

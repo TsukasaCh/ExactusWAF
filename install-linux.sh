@@ -17,6 +17,8 @@
 #                       (e.g. http://127.0.0.1:3000)
 #     --mode block|monitor   start mode           (default block)
 #     --no-webserver    don't touch nginx/apache; just use --backend
+#     --binary-only     only install the exactuswaf command (no global front),
+#                       then protect apps with: exactuswaf protect <target>
 #     --uninstall       remove ExactusWAF and restore web server config
 #     -h | --help
 # =====================================================================
@@ -53,6 +55,7 @@ while [ $# -gt 0 ]; do
     --backend)   BACKEND_URL="$2"; shift 2;;
     --mode)      MODE="$2"; shift 2;;
     --no-webserver) TOUCH_WS=0; shift;;
+    --binary-only) ACTION="binary"; shift;;
     --uninstall) ACTION="uninstall"; shift;;
     -h|--help) grep '^#' "$0" | sed 's/^#//'; exit 0;;
     *) die "unknown option: $1 (try --help)";;
@@ -323,7 +326,22 @@ do_uninstall() {
   log "done."
 }
 
+do_binary_only() {
+  log "installing the exactuswaf command only (no global front)"
+  command -v ss >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq iproute2; }
+  build_binary
+  make_user_dirs
+  echo
+  log "Done. Now protect your apps with one command, e.g.:"
+  info "  exactuswaf protect docker <container-id-or-name>"
+  info "  exactuswaf protect /etc/nginx/sites-enabled/<site>"
+  info "  exactuswaf protect http://127.0.0.1:3000"
+  info "  exactuswaf list        # show protected apps"
+  info "  exactuswaf unprotect <name>"
+}
+
 case "$ACTION" in
   install) do_install;;
+  binary) do_binary_only;;
   uninstall) do_uninstall;;
 esac

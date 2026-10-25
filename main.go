@@ -1,131 +1,116 @@
-// ExactusWAF - Web Application Firewall sederhana berbasis Go.
+// ExactusWAF - a simple Web Application Firewall written in Go.
 //
-// Cara pakai:
+// Run from a config file (used by the service):
 //
-//	exactuswaf                 -> memakai config.yaml di folder yang sama
-//	exactuswaf -config lain.yaml
+//	exactuswaf                     -> uses config.yaml in the current directory
+//	exactuswaf -config other.yaml
+//	exactuswaf run -config f.yaml
 //	exactuswaf -version
+//
+// Protect a specific app with one command:
+//
+//	exactuswaf protect docker <id|name>          # front a Docker container
+//	exactuswaf protect /etc/nginx/sites-enabled/app   # front an nginx site
+//	exactuswaf protect http://127.0.0.1:3000     # front any backend
+//	exactuswaf docker <id>                        # shorthand for "protect docker"
+//	exactuswaf list                               # show protected apps
+//	exactuswaf unprotect <name>                   # stop protecting an app
+//
+// Add --foreground to run in this terminal instead of installing a service,
+// and --help to a protect command for all options.
 package main
 
 import (
 	"flag"
 	"fmt"
-	"io"
-	"log"
-	"net/http"
 	"os"
-	"path/filepath"
-	"time"
+	"strings"
 
+	"exactuswaf/internal/cli"
 	"exactuswaf/internal/config"
-	"exactuswaf/internal/dashboard"
-	"exactuswaf/internal/proxy"
-	"exactuswaf/internal/stats"
-	"exactuswaf/internal/waf"
-	"exactuswaf/internal/webacl"
 )
 
 const version = "2.0.0"
 
 func main() {
-	cfgPath := flag.String("config", "config.yaml", "path ke file konfigurasi")
-	showVer := flag.Bool("version", false, "tampilkan versi lalu keluar")
-	flag.Parse()
+	args := os.Args[1:]
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		switch args[0] {
+		case "run":
+			runFromConfig(args[1:])
+		case "protect":
+			must(cli.Protect(args[1:], version))
+		case "docker": // shorthand: exactuswaf docker <id>
+			must(cli.Protect(args, version))
+		case "list":
+			must(cli.List())
+		case "unprotect":
+			must(cli.Unprotect(args[1:]))
+		case "help":
+			usage()
+		default:
+			// shorthand: exactuswaf <nginx-site-file | http://host:port | host:port>
+			must(cli.Protect(args, version))
+		}
+		return
+	}
+	runFromConfig(args)
+}
+
+func runFromConfig(args []string) {
+	fs := flag.NewFlagSet("exactuswaf", flag.ExitOnError)
+	cfgPath := fs.String("config", "config.yaml", "path to the config file")
+	showVer := fs.Bool("version", false, "print version and exit")
+	_ = fs.Parse(args)
 
 	if *showVer {
 		fmt.Printf("ExactusWAF v%s\n", version)
 		return
 	}
-
 	banner()
-
-	// 1. Muat konfigurasi.
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		fatal("Konfigurasi bermasalah", err)
+		fatal("Configuration error", err)
 	}
 	for _, w := range cfg.Warnings {
 		fmt.Fprintf(os.Stderr, "⚠️  %s\n", w)
 	}
-
-	// 2. Siapkan log.
-	if cfg.LogFile != "" {
-		f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			fatal("Tidak bisa membuka file log", err)
-		}
-		defer f.Close()
-		log.SetOutput(io.MultiWriter(os.Stdout, f))
+	if err := cli.RunServer(cfg, version); err != nil {
+		fatal("Server stopped", err)
 	}
-	log.SetFlags(log.LstdFlags)
+}
 
-	// 3. Muat katalog signature.
-	catalog, err := waf.LoadCatalog(cfg.RulesFile)
+func usage() {
+	fmt.Print(`ExactusWAF - Web Application Firewall
+
+Run from config:
+  exactuswaf [-config config.yaml]
+  exactuswaf -version
+
+Protect an app (Linux):
+  exactuswaf protect docker <id|name>
+  exactuswaf protect /etc/nginx/sites-enabled/<site>
+  exactuswaf protect http://127.0.0.1:3000
+  exactuswaf docker <id>                 (shorthand)
+  exactuswaf list
+  exactuswaf unprotect <name>
+
+Options for protect:
+  --port N            public port to listen on (default 80)
+  --dash-port N       dashboard port (default 8991)
+  --container-port N  container port to forward to (docker)
+  --mode block|monitor (default block)
+  --password P        dashboard password (default: random)
+  --name N            instance name
+  --foreground, -f    run here instead of installing a service
+  --no-relocate       (nginx) don't edit the site; set backend yourself
+`)
+}
+
+func must(err error) {
 	if err != nil {
-		fatal("Gagal memuat aturan", err)
-	}
-
-	// 4. Web ACL (tersimpan di data_dir bila diisi).
-	var aclPath string
-	if cfg.DataDir != "" {
-		aclPath = filepath.Join(cfg.DataDir, "webacl.json")
-	}
-	acls, err := webacl.NewStore(aclPath, catalog)
-	if err != nil {
-		fatal("Gagal memuat Web ACL", err)
-	}
-
-	// 5. Statistik + WAF server (plan awal dari Web ACL aktif).
-	st := stats.New()
-	wafServer, err := proxy.New(cfg, acls.Plan(), st)
-	if err != nil {
-		fatal("Gagal menyiapkan proxy", err)
-	}
-	// Setiap perubahan Web ACL aktif langsung diterapkan ke mesin WAF tanpa restart.
-	acls.OnChange(wafServer.SetPlan)
-
-	log.Printf("Aturan dimuat : %d signature (versi %s, update %s)", catalog.Count(), catalog.Version, catalog.Updated)
-	log.Printf("Web ACL aktif : %s (%d signature)", acls.Active().Name, len(acls.Active().Rules))
-	log.Printf("Mode          : %s", cfg.Mode)
-	log.Printf("Melindungi    : %s", cfg.Backend)
-	log.Printf("Mendengarkan  : http://%s", cfg.Listen)
-
-	// 6. Jalankan konsol (jika aktif) di goroutine terpisah.
-	if cfg.Dashboard.Enabled {
-		dash := dashboard.New(dashboard.Deps{
-			Stats: st, Catalog: catalog, ACLs: acls, Banner: wafServer.Banner(),
-			Config: cfg, Password: cfg.Dashboard.Password, AppVersion: version,
-			Mode: wafServer.Mode, SetMode: wafServer.SetMode,
-		})
-		go func() {
-			log.Printf("Konsol        : http://%s  (user: admin)", cfg.Dashboard.Listen)
-			srv := &http.Server{
-				Addr:              cfg.Dashboard.Listen,
-				Handler:           dash.Handler(),
-				ReadHeaderTimeout: 5 * time.Second,
-			}
-			if err := srv.ListenAndServe(); err != nil {
-				log.Printf("[konsol] berhenti: %v", err)
-			}
-		}()
-	}
-
-	// 6. Jalankan server utama WAF.
-	srv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           wafServer,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	fmt.Println("\n✅ ExactusWAF siap. Tekan Ctrl+C untuk berhenti.")
-
-	if cfg.TLS.Enabled {
-		err = srv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
-	} else {
-		err = srv.ListenAndServe()
-	}
-	if err != nil {
-		fatal("Server berhenti", err)
+		fmt.Fprintf(os.Stderr, "\n❌ %v\n", err)
+		os.Exit(1)
 	}
 }
 
@@ -140,6 +125,6 @@ func banner() {
 }
 
 func fatal(msg string, err error) {
-	fmt.Fprintf(os.Stderr, "\n❌ %s:\n   %v\n\nSilakan periksa config.yaml lalu jalankan lagi.\n", msg, err)
+	fmt.Fprintf(os.Stderr, "\n❌ %s:\n   %v\n\nCheck your config and try again.\n", msg, err)
 	os.Exit(1)
 }
