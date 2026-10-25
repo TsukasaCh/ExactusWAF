@@ -48,12 +48,15 @@ warn() { printf "${C_Y}[!]${C_0} %s\n" "$*"; }
 die()  { printf "${C_R}[x] %s${C_0}\n" "$*" >&2; exit 1; }
 
 # ---- args ----
+# need VALUE FLAG: fail with a friendly message when a flag that takes a value
+# is given without one (avoids a cryptic '$2: unbound variable' under set -u).
+need() { [ -n "${1:-}" ] || die "option '$2' needs a value, e.g. $2 ${3:-N}"; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dash-port) DASH_PORT="$2"; shift 2;;
-    --waf-port)  WAF_PORT="$2"; shift 2;;
-    --backend)   BACKEND_URL="$2"; shift 2;;
-    --mode)      MODE="$2"; shift 2;;
+    --dash-port) need "${2:-}" --dash-port 8991; DASH_PORT="$2"; shift 2;;
+    --waf-port)  need "${2:-}" --waf-port 80;     WAF_PORT="$2"; shift 2;;
+    --backend)   need "${2:-}" --backend http://127.0.0.1:3000; BACKEND_URL="$2"; shift 2;;
+    --mode)      need "${2:-}" --mode block;      MODE="$2"; shift 2;;
     --no-webserver) TOUCH_WS=0; shift;;
     --binary-only) ACTION="binary"; shift;;
     --uninstall) ACTION="uninstall"; shift;;
@@ -119,6 +122,25 @@ make_user_dirs() {
 }
 
 port_in_use() { ss -ltnH "( sport = :$1 )" 2>/dev/null | grep -q . ; }
+
+# free_port_from_exactuswaf stops a PREVIOUS ExactusWAF service that holds the
+# given port, so a reinstall (now a single multi-app WAF) can take it over. It
+# only touches the exactuswaf* unit whose process actually owns the port, so
+# apps on other ports are left alone; non-ExactusWAF holders are untouched.
+free_port_from_exactuswaf() {
+  local port="$1" pid u mainpid
+  pid="$(ss -ltnpH "( sport = :${port} )" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -n1)"
+  [ -n "$pid" ] || return 0
+  for u in $(systemctl list-units 'exactuswaf*' --all --no-legend --plain 2>/dev/null | awk '{print $1}'); do
+    mainpid="$(systemctl show -p MainPID --value "$u" 2>/dev/null)"
+    if [ -n "$mainpid" ] && [ "$mainpid" = "$pid" ]; then
+      warn "port ${port} is held by a previous ExactusWAF service (${u}); stopping it to take over"
+      systemctl disable --now "$u" >/dev/null 2>&1 || true
+      return 0
+    fi
+  done
+  return 0
+}
 
 pick_backend_port() {
   local p="$BACKEND_PORT"
@@ -296,7 +318,13 @@ do_install() {
   fi
 
   if port_in_use "$WAF_PORT"; then
-    die "port ${WAF_PORT} is still in use by another process; free it or pass --waf-port"
+    free_port_from_exactuswaf "$WAF_PORT"
+    sleep 1
+    if port_in_use "$WAF_PORT"; then
+      warn "port ${WAF_PORT} is held by a non-ExactusWAF process:"
+      ss -ltnp "( sport = :${WAF_PORT} )" 2>/dev/null | sed 's/^/      /' || true
+      die "free port ${WAF_PORT} or choose another with --waf-port <N>"
+    fi
   fi
 
   write_config
