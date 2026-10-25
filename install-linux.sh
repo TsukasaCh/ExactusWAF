@@ -343,11 +343,31 @@ do_uninstall() {
   log "done."
 }
 
+restart_waf_services() {
+  # After replacing the binary on disk, the already-running services keep the
+  # OLD code in memory until restarted. Refresh every running exactuswaf unit
+  # (the global `exactuswaf` and per-app `exactuswaf-<name>`) so the new binary
+  # actually takes effect.
+  local units u
+  units="$(systemctl list-units 'exactuswaf*' --state=running --no-legend 2>/dev/null | awk '{print $1}')"
+  if [ -z "$units" ]; then
+    info "no running ExactusWAF services found to restart"
+    return
+  fi
+  for u in $units; do
+    log "restarting $u so it picks up the new binary"
+    if ! systemctl restart "$u"; then
+      warn "failed to restart $u — check: journalctl -u $u -n 20 --no-pager"
+    fi
+  done
+}
+
 do_binary_only() {
   log "installing the exactuswaf command only (no global front)"
   command -v ss >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq iproute2; }
   build_binary
   make_user_dirs
+  restart_waf_services
   echo
   log "Done. Now protect your apps with one command, e.g.:"
   info "  exactuswaf protect docker <container-id-or-name>"
