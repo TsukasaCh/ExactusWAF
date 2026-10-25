@@ -84,13 +84,25 @@ func Protect(args []string, appVersion string) error {
 		if len(pos) < 2 {
 			return fmt.Errorf("usage: exactuswaf protect docker <container ID or name>")
 		}
-		b, cname, err := resolveDocker(pos[1], o.cPort)
+		b, cname, pubPorts, err := resolveDocker(pos[1], o.cPort)
 		if err != nil {
 			return err
 		}
 		backend, name = b, cname
+		// Front the port users actually reach: the container's published host
+		// port. If the user didn't override --port and the container publishes
+		// one, take it over (otherwise traffic to that port skips the WAF).
 		if publicPort == 0 {
-			publicPort = 80
+			if len(pubPorts) > 0 {
+				publicPort = pubPorts[0]
+			} else {
+				publicPort = 80
+			}
+		}
+		// If that public port is still owned by Docker's own publish, the WAF
+		// cannot sit in front of it live — explain exactly how to fix it.
+		if contains(pubPorts, publicPort) && !portFree(publicPort) {
+			return dockerBypassError(cname, publicPort)
 		}
 	case isExistingFile(pos[0]):
 		if runtime.GOOS != "linux" {
@@ -400,6 +412,31 @@ func nonEmpty(s, def string) string {
 	}
 	return s
 }
+func contains(xs []int, v int) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// dockerBypassError explains why a publicly-published container can't be fronted
+// live, and the exact steps to fix it.
+func dockerBypassError(name string, port int) error {
+	return fmt.Errorf(`container %q publishes port %d directly to the internet, so traffic
+to :%d bypasses the WAF and ExactusWAF cannot bind that port while Docker holds it.
+
+To route it through ExactusWAF, make the container listen on localhost only, then re-protect:
+
+  • docker compose:  set its ports to  "127.0.0.1:%d:%d"  then:  docker compose up -d
+  • docker run:      recreate it with  -p 127.0.0.1:%d:%d
+  then:              exactuswaf protect docker %s --port %d
+
+(Or run the WAF on a different public port with --port <N> and firewall off :%d.)`,
+		name, port, port, port, port, port, port, name, port, port)
+}
+
 func runOut(name string, a ...string) string {
 	out, _ := exec.Command(name, a...).Output()
 	return string(out)

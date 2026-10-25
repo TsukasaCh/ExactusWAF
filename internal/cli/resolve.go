@@ -122,22 +122,47 @@ func tcpPort(spec string) int {
 	return n
 }
 
-// resolveDocker inspects a container and returns its backend URL.
-func resolveDocker(idOrName string, portOverride int) (backend, containerName string, err error) {
+// dockerPublicPorts returns the host ports the container publishes on a public
+// interface (HostIp empty / 0.0.0.0 / ::). These bypass the WAF unless the
+// container is re-published to localhost. Pure function.
+func dockerPublicPorts(data []byte) []int {
+	var arr []dockerInspect
+	if json.Unmarshal(data, &arr) != nil || len(arr) == 0 {
+		return nil
+	}
+	seen := map[int]bool{}
+	var out []int
+	for _, binds := range arr[0].NetworkSettings.Ports {
+		for _, b := range binds {
+			if b.HostIP == "" || b.HostIP == "0.0.0.0" || b.HostIP == "::" {
+				if n, err := strconv.Atoi(b.HostPort); err == nil && !seen[n] {
+					seen[n] = true
+					out = append(out, n)
+				}
+			}
+		}
+	}
+	sort.Ints(out)
+	return out
+}
+
+// resolveDocker inspects a container and returns its backend URL, name, and the
+// host ports it publishes publicly (if any).
+func resolveDocker(idOrName string, portOverride int) (backend, containerName string, publicPorts []int, err error) {
 	out, err := exec.Command("docker", "inspect", idOrName).Output()
 	if err != nil {
-		return "", "", fmt.Errorf("docker inspect %q failed (is Docker installed and the container running?): %w", idOrName, err)
+		return "", "", nil, fmt.Errorf("docker inspect %q failed (is Docker installed and the container running?): %w", idOrName, err)
 	}
 	ip, port, err := parseDockerInspect(out, portOverride)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	name := idOrName
 	var arr []dockerInspect
 	if json.Unmarshal(out, &arr) == nil && len(arr) > 0 {
 		name = strings.TrimPrefix(arr[0].Name, "/")
 	}
-	return fmt.Sprintf("http://%s:%d", ip, port), name, nil
+	return fmt.Sprintf("http://%s:%d", ip, port), name, dockerPublicPorts(out), nil
 }
 
 // ---- nginx config parsing ----

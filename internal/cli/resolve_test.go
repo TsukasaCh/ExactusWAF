@@ -56,6 +56,15 @@ func TestParseDockerInspect(t *testing.T) {
 	if _, _, err := parseDockerInspect(j4, 0); err == nil {
 		t.Fatal("expected error when container has no IP")
 	}
+	// published public port detection (0.0.0.0:3000)
+	if pp := dockerPublicPorts(j); len(pp) != 1 || pp[0] != 3000 {
+		t.Fatalf("dockerPublicPorts = %v, want [3000]", pp)
+	}
+	// container only on docker network (no public publish) -> none
+	jLocal := []byte(`[{"Name":"/x","NetworkSettings":{"IPAddress":"172.18.0.3","Ports":{"8787/tcp":[{"HostIp":"127.0.0.1","HostPort":"8787"}]}},"Config":{"ExposedPorts":{"8787/tcp":{}}}}]`)
+	if pp := dockerPublicPorts(jLocal); len(pp) != 0 {
+		t.Fatalf("dockerPublicPorts(localhost-bound) = %v, want []", pp)
+	}
 }
 
 func TestParseNginxListenPorts(t *testing.T) {
