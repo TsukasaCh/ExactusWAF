@@ -30,6 +30,19 @@ func New(requestsPerMinute, burst int) *Limiter {
 	return l
 }
 
+// Reconfigure mengubah laju & burst saat berjalan (dipanggil saat admin mengubah
+// rate limit dari konsol). Aman dipanggil dari goroutine lain.
+func (l *Limiter) Reconfigure(requestsPerMinute, burst int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if requestsPerMinute > 0 {
+		l.rate = float64(requestsPerMinute) / 60.0
+	}
+	if burst > 0 {
+		l.capacity = float64(burst)
+	}
+}
+
 // Allow mengembalikan true jika IP masih boleh melakukan permintaan.
 func (l *Limiter) Allow(ip string) bool {
 	l.mu.Lock()

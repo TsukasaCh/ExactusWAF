@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"exactuswaf/internal/config"
+	"exactuswaf/internal/settings"
 	"exactuswaf/internal/stats"
 	"exactuswaf/internal/waf"
 	"exactuswaf/internal/webacl"
@@ -30,10 +31,18 @@ func newTestDash(t *testing.T) *Dashboard {
 	if err != nil {
 		t.Fatal(err)
 	}
+	setStore, err := settings.NewStore("", settings.Settings{
+		RateLimit: settings.RateLimit{Enabled: true, RequestsPerMinute: 240, Burst: 60},
+		AutoBan:   settings.AutoBan{Enabled: true, MaxStrikes: 5, WindowMinutes: 10, BanMinutes: 60, Scope: "ip_ua"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	mode := "block"
 	return New(Deps{
 		Stats: stats.New(), Catalog: cat, ACLs: acls, Banner: nil,
 		Config:   &config.Config{Backend: "http://contoh:8080", Mode: "block", Listen: "0.0.0.0:8080"},
+		Settings: setStore,
 		Password: testPassword, AppVersion: "test",
 		Mode: func() string { return mode },
 		SetMode: func(m string) error {
@@ -322,4 +331,63 @@ func firstSignature(t *testing.T, h http.Handler, c *http.Cookie) string {
 		t.Fatal("katalog signature kosong")
 	}
 	return sigs.Signatures[0].ID
+}
+
+func TestUpdateShieldSettings(t *testing.T) {
+	h := newTestHandler(t)
+	c := login(t, h)
+
+	// Valid update applies.
+	body := `{"auto_ban":{"enabled":false,"max_strikes":3,"window_minutes":5,"ban_minutes":30,"scope":"ip"},` +
+		`"rate_limit":{"enabled":true,"requests_per_minute":500,"burst":100}}`
+	rec := postJSON(t, h, c, http.MethodPut, "/api/shield/settings", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT shield settings: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var shield struct {
+		Autoban   map[string]any `json:"autoban"`
+		RateLimit map[string]any `json:"rate_limit"`
+	}
+	getJSON(t, h, c, "/api/shield", &shield)
+	if shield.Autoban["enabled"].(bool) {
+		t.Error("auto-ban should be disabled after update")
+	}
+	if shield.RateLimit["requests_per_minute"].(float64) != 500 {
+		t.Errorf("rate limit not applied: %v", shield.RateLimit)
+	}
+
+	// Invalid scope rejected.
+	bad := `{"auto_ban":{"enabled":true,"max_strikes":3,"window_minutes":5,"ban_minutes":30,"scope":"nope"},` +
+		`"rate_limit":{"enabled":false,"requests_per_minute":1,"burst":1}}`
+	if rec := postJSON(t, h, c, http.MethodPut, "/api/shield/settings", bad); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad scope: got %d, want 400", rec.Code)
+	}
+}
+
+func TestUpdateIPSets(t *testing.T) {
+	h := newTestHandler(t)
+	c := login(t, h)
+
+	rec := postJSON(t, h, c, http.MethodPut, "/api/ipsets",
+		`{"blocklist":["10.0.0.0/8","1.2.3.4"],"allowlist":["8.8.8.8"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT ipsets: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var sets struct {
+		Blocklist []string `json:"blocklist"`
+		Allowlist []string `json:"allowlist"`
+	}
+	getJSON(t, h, c, "/api/ipsets", &sets)
+	if len(sets.Blocklist) != 2 || len(sets.Allowlist) != 1 {
+		t.Fatalf("ipsets not applied: %+v", sets)
+	}
+
+	// Invalid entry rejected, state unchanged.
+	if rec := postJSON(t, h, c, http.MethodPut, "/api/ipsets", `{"blocklist":["garbage"],"allowlist":[]}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid IP: got %d, want 400", rec.Code)
+	}
+	getJSON(t, h, c, "/api/ipsets", &sets)
+	if len(sets.Blocklist) != 2 {
+		t.Fatalf("state changed after rejected update: %+v", sets)
+	}
 }

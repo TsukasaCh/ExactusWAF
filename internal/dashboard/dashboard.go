@@ -10,6 +10,7 @@ import (
 
 	"exactuswaf/internal/autoban"
 	"exactuswaf/internal/config"
+	"exactuswaf/internal/settings"
 	"exactuswaf/internal/stats"
 	"exactuswaf/internal/waf"
 	"exactuswaf/internal/webacl"
@@ -27,6 +28,7 @@ type Deps struct {
 	ACLs       *webacl.Store
 	Banner     *autoban.Banner
 	Config     *config.Config
+	Settings   *settings.Store
 	Password   string
 	AppVersion string
 
@@ -90,7 +92,10 @@ func (d *Dashboard) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/webacls/{id}", d.requireLoginAPI(d.handleDeleteACL))
 	mux.HandleFunc("POST /api/webacls/{id}/activate", d.requireLoginAPI(d.handleActivateACL))
 	mux.HandleFunc("GET /api/shield", d.requireLoginAPI(d.handleShield))
+	mux.HandleFunc("PUT /api/shield/settings", d.requireLoginAPI(d.handleUpdateShield))
 	mux.HandleFunc("POST /api/shield/unban", d.requireLoginAPI(d.handleUnban))
+	mux.HandleFunc("GET /api/ipsets", d.requireLoginAPI(d.handleIPSets))
+	mux.HandleFunc("PUT /api/ipsets", d.requireLoginAPI(d.handleUpdateIPSets))
 	mux.HandleFunc("GET /api/settings", d.requireLoginAPI(d.handleSettings))
 	mux.HandleFunc("POST /api/mode", d.requireLoginAPI(d.handleSetMode))
 

@@ -15,6 +15,7 @@ import (
 	"exactuswaf/internal/config"
 	"exactuswaf/internal/dashboard"
 	"exactuswaf/internal/proxy"
+	"exactuswaf/internal/settings"
 	"exactuswaf/internal/stats"
 	"exactuswaf/internal/waf"
 	"exactuswaf/internal/webacl"
@@ -54,6 +55,30 @@ func RunServer(cfg *config.Config, appVersion string) error {
 	}
 	acls.OnChange(wafServer.SetPlan)
 
+	// Runtime-editable settings (rate limit, auto-ban, IP sets), persisted to
+	// <data_dir>/settings.json and seeded from config.yaml on first run.
+	var setPath string
+	if cfg.DataDir != "" {
+		setPath = filepath.Join(cfg.DataDir, "settings.json")
+	}
+	setStore, err := settings.NewStore(setPath, settings.Settings{
+		RateLimit: settings.RateLimit{Enabled: cfg.RateLimit.Enabled, RequestsPerMinute: cfg.RateLimit.RequestsPerMinute, Burst: cfg.RateLimit.Burst},
+		AutoBan: settings.AutoBan{Enabled: cfg.AutoBan.Enabled, MaxStrikes: cfg.AutoBan.MaxStrikes,
+			WindowMinutes: cfg.AutoBan.WindowMinutes, BanMinutes: cfg.AutoBan.BanMinutes, Scope: cfg.AutoBan.Scope},
+		Blocklist: cfg.IPBlock,
+		Allowlist: cfg.IPAllow,
+	})
+	if err != nil {
+		return fmt.Errorf("gagal memuat settings: %w", err)
+	}
+	// OnChange fires immediately with the persisted settings, so the proxy picks
+	// them up at startup and on every later console edit — without a restart.
+	setStore.OnChange(func(s settings.Settings) {
+		wafServer.SetRateLimit(s.RateLimit.Enabled, s.RateLimit.RequestsPerMinute, s.RateLimit.Burst)
+		wafServer.SetAutoBan(s.AutoBan.Enabled, s.AutoBan.MaxStrikes, s.AutoBan.WindowMinutes, s.AutoBan.BanMinutes, s.AutoBan.Scope)
+		wafServer.SetIPSets(s.Blocklist, s.Allowlist)
+	})
+
 	log.Printf("Rules loaded  : %d signatures (version %s, updated %s)", catalog.Count(), catalog.Version, catalog.Updated)
 	log.Printf("Active Web ACL: %s (%d signatures)", acls.Active().Name, len(acls.Active().Rules))
 	log.Printf("Mode          : %s", cfg.Mode)
@@ -63,7 +88,7 @@ func RunServer(cfg *config.Config, appVersion string) error {
 	if cfg.Dashboard.Enabled {
 		dash := dashboard.New(dashboard.Deps{
 			Stats: st, Catalog: catalog, ACLs: acls, Banner: wafServer.Banner(),
-			Config: cfg, Password: cfg.Dashboard.Password, AppVersion: appVersion,
+			Config: cfg, Settings: setStore, Password: cfg.Dashboard.Password, AppVersion: appVersion,
 			Mode: wafServer.Mode, SetMode: wafServer.SetMode,
 		})
 		go func() {

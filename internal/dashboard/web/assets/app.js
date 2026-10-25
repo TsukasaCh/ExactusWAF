@@ -682,30 +682,59 @@ Pages.signature = async function (q) {
   apply();
 };
 
-/* ---- IP sets ---- */
+/* ---- IP sets (editable; single IP or CIDR) ---- */
 Pages["ip-set"] = async function () {
   setActiveNav("#/ip-set");
   const host = h("div", {});
   setPage(host, [{ label: "ExactusWAF" }, { label: "IP sets" }]);
   host.append(loading());
-  let s;
-  try { s = await API.get("/api/shield"); } catch (e) { host.textContent = ""; host.append(errBox(e)); return; }
-  const ipTable = (list, empty) => table([{ label: "IP address", key: "ip", mono: true, render: (x) => h("span", { class: "mono", text: x }) }],
-    list.map((ip) => ip), { empty }) ;
-  host.textContent = "";
-  host.append(
-    pageHead("IP sets", "IPs that are always blocked or always allowed. Managed via the config file."),
-    h("div", { class: "flash info", style: "margin-bottom:16px" }, ico("info", "fi"),
-      h("span", { text: "IP sets are read-only in the console for now. Edit ip_blocklist / ip_allowlist in config.yaml and restart." })),
-    h("div", { class: "grid-2" },
-      container({ title: "Always blocked", count: s.blocklist.length, flush: true }, listOrEmpty(s.blocklist, "No permanently blocked IPs.")),
-      container({ title: "Always allowed", count: s.allowlist.length, flush: true }, listOrEmpty(s.allowlist, "No allowlisted IPs."))));
+  let data;
+  try { data = await API.get("/api/ipsets"); } catch (e) { host.textContent = ""; host.append(errBox(e)); return; }
+  let block = (data.blocklist || []).slice();
+  let allow = (data.allowlist || []).slice();
+
+  async function save(kind, next) {
+    const body = { blocklist: kind === "block" ? next : block, allowlist: kind === "allow" ? next : allow };
+    const res = await API.put("/api/ipsets", body); // throws on invalid; caller flashes
+    block = res.blocklist || []; allow = res.allowlist || [];
+    render();
+  }
+
+  function ipCard(title, kind, list) {
+    const inp = h("input", { class: "inp", "data-testid": "ipset-" + kind + "-input",
+      placeholder: "IP or CIDR, e.g. 203.0.113.9 or 10.0.0.0/8",
+      onkeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); add(); } } });
+    const addBtn = h("button", { class: "btn", "data-testid": "ipset-" + kind + "-add", onclick: add }, ico("plus"), "Add");
+    async function add() {
+      const v = inp.value.trim(); if (!v) return;
+      addBtn.disabled = true;
+      try { await save(kind, list.concat([v])); flash("success", "Added " + v + "."); }
+      catch (e) { addBtn.disabled = false; flash("error", e.message); }
+    }
+    async function remove(ip) {
+      try { await save(kind, list.filter((x) => x !== ip)); flash("success", "Removed " + ip + "."); }
+      catch (e) { flash("error", e.message); }
+    }
+    const rows = list.map((ip) => h("tr", {},
+      h("td", { class: "mono", text: ip }),
+      h("td", { class: "num" }, h("button", { class: "btn small link danger", "aria-label": "Remove " + ip, onclick: () => remove(ip) }, ico("trash")))));
+    const body = list.length
+      ? h("div", { class: "table-wrap" }, h("table", { class: "tbl" }, h("tbody", {}, rows)))
+      : emptyState(kind === "block" ? "No blocked IPs." : "No allowed IPs.");
+    const tools = h("div", { class: "tbl-tools" }, h("div", { class: "search-inp", style: "flex:1;min-width:220px" }, inp), addBtn);
+    return container({ title, count: list.length, flush: true }, h("div", {}, tools, body));
+  }
+
+  function render() {
+    host.textContent = "";
+    host.append(
+      pageHead("IP sets", "Always block or always allow specific IPs or CIDR ranges (e.g. 203.0.113.9 or 10.0.0.0/8). Changes apply to the live WAF instantly."),
+      h("div", { class: "grid-2" },
+        ipCard("Always blocked", "block", block),
+        ipCard("Always allowed", "allow", allow)));
+  }
+  render();
 };
-function listOrEmpty(list, empty) {
-  if (!list || list.length === 0) return emptyState(empty);
-  return h("div", { class: "table-wrap" }, h("table", { class: "tbl" }, h("tbody", {},
-    list.map((ip) => h("tr", {}, h("td", { class: "mono", text: ip }))))));
-}
 
 /* ---- Request log ---- */
 Pages.log = async function () {
@@ -739,35 +768,80 @@ Pages.log = async function () {
   await refresh(); poll(refresh, 5000);
 };
 
-/* ---- Shield overview ---- */
+/* ---- form helpers (editable settings) ---- */
+function onoff(on) {
+  let val = !!on;
+  const onB = h("button", { type: "button", text: "On" });
+  const offB = h("button", { type: "button", text: "Off" });
+  const seg = h("div", { class: "seg", role: "group", "aria-label": "Toggle" }, onB, offB);
+  const upd = () => { onB.className = val ? "on" : ""; offB.className = val ? "" : "on"; };
+  onB.onclick = () => { val = true; upd(); }; offB.onclick = () => { val = false; upd(); };
+  upd();
+  return { el: seg, value: () => val };
+}
+function numInput(v, min, max) {
+  return h("input", { class: "inp", type: "number", value: String(v), min: String(min), max: String(max), inputmode: "numeric", style: "max-width:240px" });
+}
+function field(label, node) {
+  return h("label", { class: "field" }, h("span", { class: "lbl", text: label }),
+    node && node.nodeType ? node : document.createTextNode(String(node)));
+}
+
+/* ---- Shield overview (editable) ---- */
 Pages.shield = async function () {
   setActiveNav("#/shield");
   const host = h("div", {});
   setPage(host, [{ label: "ExactusWAF" }, { label: "Shield" }]);
   host.append(loading());
-  async function refresh() {
-    let s; try { s = await API.get("/api/shield"); } catch (e) { return; }
-    const ab = s.autoban;
-    host.textContent = "";
-    host.append(
-      pageHead("Shield overview", "Second layer of defense: auto-ban repeat attackers and rate limiting.",
-        h("a", { class: "btn", href: "#/shield/ban" }, ico("ban"), "View blocked IPs")),
-      h("div", { class: "kpis" },
-        kpi("Auto-ban", ab.enabled ? "Active" : "Inactive"),
-        kpi("Currently blocked IPs", num(s.bans.length), "blocked"),
-        kpi("Rate limit", s.rate_limit.enabled ? num(s.rate_limit.requests_per_minute) + "/mnt" : "Inactive")),
-      container({ title: "Auto-ban settings" }, h("div", { class: "kv" },
-        kv("Status", ab.enabled ? statusEl("ok", "Active") : statusEl("muted", "Inactive")),
-        kv("Threshold", ab.max_strikes + " attacks within " + ab.window_minutes + " minutes"),
-        kv("Block duration", ab.ban_minutes + " minutes"),
-        kv("Block scope", ab.scope === "ip_ua" ? "IP + browser type (safe for CGNAT)" : "Whole IP"))),
-      container({ title: "Rate limiting" }, h("div", { class: "kv" },
-        kv("Status", s.rate_limit.enabled ? statusEl("ok", "Active") : statusEl("muted", "Inactive")),
-        kv("Batas", num(s.rate_limit.requests_per_minute) + " requests / minute per IP"),
-        kv("Burst", num(s.rate_limit.burst)),
-        kv("Trust proxy headers", s.trust_proxy_headers ? statusEl("warn", "Yes (X-Forwarded-For)") : statusEl("muted", "No")))));
+  // No polling here: it would clobber the edit forms. The live ban count lives
+  // on the Blocked IPs page, which polls.
+  let s; try { s = await API.get("/api/shield"); } catch (e) { host.textContent = ""; host.append(errBox(e)); return; }
+
+  const abEnabled = onoff(s.autoban.enabled);
+  const abStrikes = numInput(s.autoban.max_strikes, 1, 10000);
+  const abWindow = numInput(s.autoban.window_minutes, 1, 10080);
+  const abBan = numInput(s.autoban.ban_minutes, 1, 525600);
+  const abScope = h("select", { class: "inp", style: "max-width:320px" },
+    h("option", { value: "ip_ua", text: "IP + browser type (safe for CGNAT)" }),
+    h("option", { value: "ip", text: "Whole IP (aggressive)" }));
+  abScope.value = s.autoban.scope === "ip" ? "ip" : "ip_ua";
+
+  const rlEnabled = onoff(s.rate_limit.enabled);
+  const rlRpm = numInput(s.rate_limit.requests_per_minute, 1, 1000000);
+  const rlBurst = numInput(s.rate_limit.burst, 1, 1000000);
+
+  const saveBtn = h("button", { class: "btn primary", "data-testid": "shield-save", onclick: save }, ico("check"), "Save changes");
+  function resetBtn() { saveBtn.disabled = false; saveBtn.innerHTML = ""; saveBtn.append(ico("check"), document.createTextNode("Save changes")); }
+  async function save() {
+    const body = {
+      auto_ban: { enabled: abEnabled.value(), max_strikes: +abStrikes.value, window_minutes: +abWindow.value, ban_minutes: +abBan.value, scope: abScope.value },
+      rate_limit: { enabled: rlEnabled.value(), requests_per_minute: +rlRpm.value, burst: +rlBurst.value },
+    };
+    saveBtn.disabled = true; saveBtn.textContent = "Saving…";
+    try { await API.put("/api/shield/settings", body); flash("success", "Shield settings applied to the live WAF."); resetBtn(); }
+    catch (e) { flash("error", e.message); resetBtn(); }
   }
-  await refresh(); poll(refresh, 5000);
+
+  host.textContent = "";
+  host.append(
+    pageHead("Shield overview", "Second layer of defense: auto-ban repeat attackers and rate limiting. Changes apply instantly — no restart.",
+      h("a", { class: "btn", href: "#/shield/ban" }, ico("ban"), "View blocked IPs")),
+    h("div", { class: "kpis" },
+      kpi("Auto-ban", s.autoban.enabled ? "Active" : "Inactive"),
+      kpi("Currently blocked IPs", num(s.bans.length), "blocked"),
+      kpi("Rate limit", s.rate_limit.enabled ? num(s.rate_limit.requests_per_minute) + "/min" : "Inactive")),
+    container({ title: "Auto-ban", desc: "Temporarily block IPs that repeatedly trigger signatures." }, h("div", {},
+      field("Status", abEnabled.el),
+      field("Strikes before ban", abStrikes),
+      field("Window (minutes)", abWindow),
+      field("Ban duration (minutes)", abBan),
+      field("Scope", abScope))),
+    container({ title: "Rate limiting", desc: "Throttle clients that send too many requests per minute." }, h("div", {},
+      field("Status", rlEnabled.el),
+      field("Requests / minute per IP", rlRpm),
+      field("Burst", rlBurst),
+      field("Trust proxy headers", s.trust_proxy_headers ? statusEl("warn", "Yes (X-Forwarded-For)") : statusEl("muted", "No (set in config.yaml)")))),
+    h("div", { class: "row-gap", style: "justify-content:flex-end;margin-top:4px" }, saveBtn));
 };
 
 /* ---- Shield bans ---- */
@@ -829,7 +903,7 @@ Pages.pengaturan = async function () {
       kv("Telegram notifications", s.telegram_enabled ? statusEl("ok", "Active") : statusEl("muted", "Inactive")),
       kv("Log file", s.log_file ? h("span", { class: "mono", text: s.log_file }) : h("span", { class: "muted", text: "to screen/container" })))),
     container({ title: "Rate limit & proxy" }, h("div", { class: "kv" },
-      kv("Rate limit", s.rate_limit.enabled ? num(s.rate_limit.requests_per_minute) + "/mnt (burst " + s.rate_limit.burst + ")" : "Inactive"),
+      kv("Rate limit", s.rate_limit.enabled ? num(s.rate_limit.requests_per_minute) + "/min (burst " + s.rate_limit.burst + ")" : "Inactive"),
       kv("Trust proxy headers", s.trust_proxy_headers ? statusEl("warn", "Yes") : statusEl("muted", "No")),
       kv("Data directory", s.data_dir ? h("span", { class: "mono", text: s.data_dir }) : h("span", { class: "muted", text: "(Web ACL in memory only)" })))));
 };

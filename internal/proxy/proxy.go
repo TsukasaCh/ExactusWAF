@@ -28,18 +28,66 @@ import (
 
 // Server menyatukan reverse proxy dengan mesin WAF.
 type Server struct {
-	cfg        *config.Config
-	plan       atomic.Pointer[waf.Plan] // plan Web ACL aktif; diganti tanpa restart
-	limiter    *ratelimit.Limiter
-	banner     *autoban.Banner
-	notifier   *notify.Notifier
-	stats      *stats.Store
-	proxy      *httputil.ReverseProxy
-	blockSet   map[string]bool
-	allowSet   map[string]bool
+	cfg       *config.Config
+	plan      atomic.Pointer[waf.Plan] // plan Web ACL aktif; diganti tanpa restart
+	limiter   *ratelimit.Limiter       // selalu ada; digerbangi rlEnabled
+	rlEnabled atomic.Bool              // rate limit aktif? (bisa diubah dari konsol)
+	banner    *autoban.Banner
+	notifier  *notify.Notifier
+	stats     *stats.Store
+	proxy     *httputil.ReverseProxy
+	// Daftar IP blok/izin; diganti tanpa restart (atomic) + sadar CIDR.
+	blockIPs   atomic.Pointer[ipMatcher]
+	allowIPs   atomic.Pointer[ipMatcher]
 	blockMode  atomic.Bool
 	trustProxy bool
-	banScope   string
+	banScope   atomic.Pointer[string]
+}
+
+// ipMatcher mencocokkan IP tunggal (exact) maupun rentang CIDR.
+type ipMatcher struct {
+	exact map[string]bool
+	cidrs []*net.IPNet
+}
+
+// newIPMatcher mem-parse daftar entri: tiap entri boleh IP tunggal ("1.2.3.4")
+// atau CIDR ("10.0.0.0/8"). Entri yang tidak valid diabaikan (validasi ketat
+// dilakukan di layer settings sebelum sampai sini).
+func newIPMatcher(list []string) *ipMatcher {
+	m := &ipMatcher{exact: make(map[string]bool)}
+	for _, raw := range list {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		if strings.Contains(v, "/") {
+			if _, n, err := net.ParseCIDR(v); err == nil {
+				m.cidrs = append(m.cidrs, n)
+			}
+			continue
+		}
+		m.exact[v] = true
+	}
+	return m
+}
+
+func (m *ipMatcher) Contains(ip string) bool {
+	if m == nil {
+		return false
+	}
+	if m.exact[ip] {
+		return true
+	}
+	if len(m.cidrs) > 0 {
+		if pip := net.ParseIP(ip); pip != nil {
+			for _, n := range m.cidrs {
+				if n.Contains(pip) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // New membuat Server WAF dengan plan Web ACL awal.
@@ -70,19 +118,29 @@ func New(cfg *config.Config, plan *waf.Plan, st *stats.Store) (*Server, error) {
 		cfg:        cfg,
 		stats:      st,
 		proxy:      rp,
-		blockSet:   toSet(cfg.IPBlock),
-		allowSet:   toSet(cfg.IPAllow),
 		trustProxy: cfg.TrustProxyHeaders,
-		banScope:   cfg.AutoBan.Scope,
 	}
+	s.blockIPs.Store(newIPMatcher(cfg.IPBlock))
+	s.allowIPs.Store(newIPMatcher(cfg.IPAllow))
+	scope := cfg.AutoBan.Scope
+	s.banScope.Store(&scope)
 	s.blockMode.Store(cfg.Mode == "block")
 	if plan == nil {
 		plan = &waf.Plan{}
 	}
 	s.plan.Store(plan)
-	if cfg.RateLimit.Enabled {
-		s.limiter = ratelimit.New(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst)
+	// Limiter selalu dialokasikan (dengan nilai config atau default) agar rate
+	// limit bisa dinyalakan/disetel dari konsol tanpa restart; rlEnabled yang
+	// menentukan aktif/tidak.
+	rpm, burst := cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst
+	if rpm <= 0 {
+		rpm = 120
 	}
+	if burst <= 0 {
+		burst = 30
+	}
+	s.limiter = ratelimit.New(rpm, burst)
+	s.rlEnabled.Store(cfg.RateLimit.Enabled)
 	s.banner = autoban.New(cfg.AutoBan.Enabled, cfg.AutoBan.MaxStrikes,
 		cfg.AutoBan.WindowMinutes, cfg.AutoBan.BanMinutes)
 	s.notifier = notify.New(cfg.Notify.Telegram.Enabled,
@@ -101,6 +159,28 @@ func (s *Server) SetPlan(p *waf.Plan) {
 		p = &waf.Plan{}
 	}
 	s.plan.Store(p)
+}
+
+// SetIPSets mengganti daftar IP blok/izin tanpa restart (dipanggil saat admin
+// mengubah IP sets dari konsol). Tiap entri boleh IP tunggal atau CIDR.
+func (s *Server) SetIPSets(block, allow []string) {
+	s.blockIPs.Store(newIPMatcher(block))
+	s.allowIPs.Store(newIPMatcher(allow))
+}
+
+// SetRateLimit menyalakan/mematikan & menyetel ulang rate limit tanpa restart.
+func (s *Server) SetRateLimit(enabled bool, requestsPerMinute, burst int) {
+	s.limiter.Reconfigure(requestsPerMinute, burst)
+	s.rlEnabled.Store(enabled)
+}
+
+// SetAutoBan menyetel ulang auto-ban (termasuk scope) tanpa restart.
+func (s *Server) SetAutoBan(enabled bool, maxStrikes, windowMinutes, banMinutes int, scope string) {
+	s.banner.SetConfig(enabled, maxStrikes, windowMinutes, banMinutes)
+	if scope != "ip" && scope != "ip_ua" {
+		scope = "ip_ua"
+	}
+	s.banScope.Store(&scope)
 }
 
 // Banner mengembalikan daftar auto-ban (untuk halaman Shield di konsol).
@@ -125,14 +205,6 @@ func (s *Server) SetMode(mode string) error {
 		return fmt.Errorf("mode harus 'block' atau 'monitor'")
 	}
 	return nil
-}
-
-func toSet(list []string) map[string]bool {
-	m := make(map[string]bool, len(list))
-	for _, v := range list {
-		m[strings.TrimSpace(v)] = true
-	}
-	return m
 }
 
 // stripCookie membuang satu cookie dari header Cookie tanpa mengubah cookie lain.
@@ -168,7 +240,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
 
 	// 1. IP allowlist -> lewati semua pemeriksaan.
-	if s.allowSet[ip] {
+	if s.allowIPs.Load().Contains(ip) {
 		s.stats.IncAllowed()
 		setForwarded(r, ip)
 		s.proxy.ServeHTTP(w, r)
@@ -176,12 +248,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. IP blocklist -> tolak.
-	if s.blockSet[ip] {
+	if s.blockIPs.Load().Contains(ip) {
 		s.deny(w, r, ip, stats.Event{
 			IP: ip, Method: r.Method, Path: r.URL.Path,
-			RuleID: "IP-BLOCK", RuleName: "IP masuk daftar blokir",
+			RuleID: "IP-BLOCK", RuleName: "IP in blocklist",
 			Severity: "high", Action: "ip-blocked",
-		}, "ip-block", "IP Anda diblokir")
+		}, "ip-block")
 		return
 	}
 
@@ -189,20 +261,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.banner.IsBanned(s.banKey(ip, r)) {
 		s.deny(w, r, ip, stats.Event{
 			IP: ip, Method: r.Method, Path: r.URL.Path,
-			RuleID: "AUTO-BAN", RuleName: "IP diblokir otomatis (serangan berulang)",
+			RuleID: "AUTO-BAN", RuleName: "Auto-banned (repeat attacker)",
 			Severity: "high", Action: "auto-banned",
-		}, "auto-ban", "IP Anda diblokir sementara karena aktivitas mencurigakan.")
+		}, "auto-ban")
 		return
 	}
 
 	// 4. Rate limit.
-	if s.limiter != nil && !s.limiter.Allow(ip) {
+	if s.rlEnabled.Load() && !s.limiter.Allow(ip) {
 		s.registerStrike(ip, r)
 		s.deny(w, r, ip, stats.Event{
 			IP: ip, Method: r.Method, Path: r.URL.Path,
-			RuleID: "RATE-LIMIT", RuleName: "Terlalu banyak permintaan",
+			RuleID: "RATE-LIMIT", RuleName: "Too many requests",
 			Severity: "medium", Action: "rate-limited",
-		}, "rate-limit", "Terlalu banyak permintaan. Coba lagi nanti.")
+		}, "rate-limit")
 		return
 	}
 
@@ -235,7 +307,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if dec.Block != nil {
 		if s.blockMode.Load() {
 			ev := event(r, ip, dec.Block, "blocked")
-			s.deny(w, r, ip, ev, dec.Block.Category, "Permintaan diblokir oleh ExactusWAF")
+			s.deny(w, r, ip, ev, dec.Block.Category)
 			return
 		}
 		s.record(r, ip, dec.Block, "monitored")
@@ -299,7 +371,7 @@ func (s *Server) registerStrike(ip string, r *http.Request) {
 		notify.Escape(ip), mins, notify.Escape(r.Method), notify.Escape(r.URL.Path)))
 }
 
-func (s *Server) deny(w http.ResponseWriter, r *http.Request, ip string, ev stats.Event, category, reason string) {
+func (s *Server) deny(w http.ResponseWriter, r *http.Request, ip string, ev stats.Event, category string) {
 	ev.Time = time.Now()
 	s.stats.RecordBlock(ev, category)
 	log.Printf("[BLOCK] %s %s dari %s | %s (%s)", r.Method, r.URL.Path, ip, ev.RuleName, ev.RuleID)
@@ -307,11 +379,10 @@ func (s *Server) deny(w http.ResponseWriter, r *http.Request, ip string, ev stat
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Blocked-By", "ExactusWAF")
 	w.WriteHeader(http.StatusForbidden)
-	_, _ = w.Write([]byte(blockPage(reason, ev.RuleID)))
+	_, _ = w.Write([]byte(blockPage(ev.RuleID)))
 }
 
-func blockPage(reason, ruleID string) string {
-	_ = reason // kept for signature compatibility; the page stays intentionally generic
+func blockPage(ruleID string) string {
 	return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>403 Forbidden</title>
@@ -366,7 +437,11 @@ func (s *Server) clientIP(r *http.Request) string {
 //     dengan browser normal tidak akan berbagi kunci dengan alat serangan, sehingga
 //     ban jauh lebih kecil kemungkinannya menyeret orang tak bersalah di IP yang sama.
 func (s *Server) banKey(ip string, r *http.Request) string {
-	if s.banScope == "ip_ua" {
+	scope := ""
+	if p := s.banScope.Load(); p != nil {
+		scope = *p
+	}
+	if scope == "ip_ua" {
 		h := fnv.New32a()
 		_, _ = h.Write([]byte(r.UserAgent()))
 		return ip + "|" + strconv.FormatUint(uint64(h.Sum32()), 16)

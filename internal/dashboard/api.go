@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"exactuswaf/internal/settings"
 	"exactuswaf/internal/stats"
 	"exactuswaf/internal/waf"
 	"exactuswaf/internal/webacl"
@@ -250,21 +251,89 @@ func (d *Dashboard) handleActivateACL(w http.ResponseWriter, r *http.Request) {
 // ---- Shield ----
 
 func (d *Dashboard) handleShield(w http.ResponseWriter, r *http.Request) {
-	ab := d.deps.Config.AutoBan
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, http.StatusOK, d.shieldPayload())
+}
+
+// shieldPayload builds the Shield JSON from the live settings store + ban list.
+func (d *Dashboard) shieldPayload() map[string]any {
+	st := d.deps.Settings.Get()
+	return map[string]any{
 		"autoban": map[string]any{
-			"enabled": d.deps.Banner.Enabled(), "max_strikes": ab.MaxStrikes,
-			"window_minutes": ab.WindowMinutes, "ban_minutes": ab.BanMinutes, "scope": ab.Scope,
+			"enabled": st.AutoBan.Enabled, "max_strikes": st.AutoBan.MaxStrikes,
+			"window_minutes": st.AutoBan.WindowMinutes, "ban_minutes": st.AutoBan.BanMinutes, "scope": st.AutoBan.Scope,
 		},
 		"bans":      nonNil(d.deps.Banner.List()),
-		"blocklist": nonNil(d.deps.Config.IPBlock),
-		"allowlist": nonNil(d.deps.Config.IPAllow),
+		"blocklist": nonNil(st.Blocklist),
+		"allowlist": nonNil(st.Allowlist),
 		"rate_limit": map[string]any{
-			"enabled":             d.deps.Config.RateLimit.Enabled,
-			"requests_per_minute": d.deps.Config.RateLimit.RequestsPerMinute,
-			"burst":               d.deps.Config.RateLimit.Burst,
+			"enabled":             st.RateLimit.Enabled,
+			"requests_per_minute": st.RateLimit.RequestsPerMinute,
+			"burst":               st.RateLimit.Burst,
 		},
 		"trust_proxy_headers": d.deps.Config.TrustProxyHeaders,
+	}
+}
+
+type shieldInput struct {
+	AutoBan struct {
+		Enabled       bool   `json:"enabled"`
+		MaxStrikes    int    `json:"max_strikes"`
+		WindowMinutes int    `json:"window_minutes"`
+		BanMinutes    int    `json:"ban_minutes"`
+		Scope         string `json:"scope"`
+	} `json:"auto_ban"`
+	RateLimit struct {
+		Enabled           bool `json:"enabled"`
+		RequestsPerMinute int  `json:"requests_per_minute"`
+		Burst             int  `json:"burst"`
+	} `json:"rate_limit"`
+}
+
+func (d *Dashboard) handleUpdateShield(w http.ResponseWriter, r *http.Request) {
+	var in shieldInput
+	if !d.readJSON(w, r, &in) {
+		return
+	}
+	_, err := d.deps.Settings.UpdateShield(
+		settings.RateLimit{Enabled: in.RateLimit.Enabled, RequestsPerMinute: in.RateLimit.RequestsPerMinute, Burst: in.RateLimit.Burst},
+		settings.AutoBan{Enabled: in.AutoBan.Enabled, MaxStrikes: in.AutoBan.MaxStrikes,
+			WindowMinutes: in.AutoBan.WindowMinutes, BanMinutes: in.AutoBan.BanMinutes, Scope: in.AutoBan.Scope},
+	)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, d.shieldPayload())
+}
+
+// ---- IP sets ----
+
+func (d *Dashboard) handleIPSets(w http.ResponseWriter, r *http.Request) {
+	st := d.deps.Settings.Get()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"blocklist": nonNil(st.Blocklist),
+		"allowlist": nonNil(st.Allowlist),
+	})
+}
+
+type ipSetsInput struct {
+	Blocklist []string `json:"blocklist"`
+	Allowlist []string `json:"allowlist"`
+}
+
+func (d *Dashboard) handleUpdateIPSets(w http.ResponseWriter, r *http.Request) {
+	var in ipSetsInput
+	if !d.readJSON(w, r, &in) {
+		return
+	}
+	out, err := d.deps.Settings.UpdateIPSets(in.Blocklist, in.Allowlist)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"blocklist": nonNil(out.Blocklist),
+		"allowlist": nonNil(out.Allowlist),
 	})
 }
 
@@ -288,15 +357,16 @@ func (d *Dashboard) handleUnban(w http.ResponseWriter, r *http.Request) {
 
 func (d *Dashboard) handleSettings(w http.ResponseWriter, r *http.Request) {
 	c := d.deps.Config
+	st := d.deps.Settings.Get()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode": d.deps.Mode(), "backend": c.Backend, "listen": c.Listen,
 		"dashboard_listen": c.Dashboard.Listen,
 		"rate_limit": map[string]any{
-			"enabled": c.RateLimit.Enabled, "requests_per_minute": c.RateLimit.RequestsPerMinute, "burst": c.RateLimit.Burst,
+			"enabled": st.RateLimit.Enabled, "requests_per_minute": st.RateLimit.RequestsPerMinute, "burst": st.RateLimit.Burst,
 		},
 		"auto_ban": map[string]any{
-			"enabled": c.AutoBan.Enabled, "max_strikes": c.AutoBan.MaxStrikes,
-			"window_minutes": c.AutoBan.WindowMinutes, "ban_minutes": c.AutoBan.BanMinutes, "scope": c.AutoBan.Scope,
+			"enabled": st.AutoBan.Enabled, "max_strikes": st.AutoBan.MaxStrikes,
+			"window_minutes": st.AutoBan.WindowMinutes, "ban_minutes": st.AutoBan.BanMinutes, "scope": st.AutoBan.Scope,
 		},
 		"trust_proxy_headers": c.TrustProxyHeaders,
 		"tls_enabled":         c.TLS.Enabled,

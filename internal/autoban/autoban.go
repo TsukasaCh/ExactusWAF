@@ -12,28 +12,58 @@ type record struct {
 	bannedTil time.Time   // kapan ban berakhir (zero = tidak diban)
 }
 
-// Banner melacak pelanggaran per IP dan menjatuhkan ban sementara.
+// Banner melacak pelanggaran per IP dan menjatuhkan ban sementara. Selalu
+// dikonstruksi (meski fitur dimatikan) agar auto-ban bisa dinyalakan/dimatikan
+// dan disetel ulang dari konsol tanpa restart.
 type Banner struct {
 	mu         sync.Mutex
 	records    map[string]*record
+	enabled    bool
 	maxStrikes int
 	window     time.Duration
 	banDur     time.Duration
 }
 
-// New membuat Banner. Nil bila fitur dimatikan (semua metode aman terhadap nil).
+// New membuat Banner. Selalu non-nil; bila enabled=false fitur pasif (tidak
+// mencatat strike / tidak menjatuhkan ban), tapi bisa dinyalakan via SetConfig.
 func New(enabled bool, maxStrikes, windowMinutes, banMinutes int) *Banner {
-	if !enabled {
-		return nil
+	if maxStrikes <= 0 {
+		maxStrikes = 5
+	}
+	if windowMinutes <= 0 {
+		windowMinutes = 10
+	}
+	if banMinutes <= 0 {
+		banMinutes = 60
 	}
 	b := &Banner{
 		records:    make(map[string]*record),
+		enabled:    enabled,
 		maxStrikes: maxStrikes,
 		window:     time.Duration(windowMinutes) * time.Minute,
 		banDur:     time.Duration(banMinutes) * time.Minute,
 	}
 	go b.janitor()
 	return b
+}
+
+// SetConfig mengganti pengaturan auto-ban saat berjalan (dari konsol).
+func (b *Banner) SetConfig(enabled bool, maxStrikes, windowMinutes, banMinutes int) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.enabled = enabled
+	if maxStrikes > 0 {
+		b.maxStrikes = maxStrikes
+	}
+	if windowMinutes > 0 {
+		b.window = time.Duration(windowMinutes) * time.Minute
+	}
+	if banMinutes > 0 {
+		b.banDur = time.Duration(banMinutes) * time.Minute
+	}
 }
 
 // IsBanned mengembalikan true bila IP sedang dalam masa ban.
@@ -43,6 +73,9 @@ func (b *Banner) IsBanned(ip string) bool {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if !b.enabled {
+		return false
+	}
 	r, ok := b.records[ip]
 	if !ok {
 		return false
@@ -59,6 +92,9 @@ func (b *Banner) Strike(ip string) (justBanned bool) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if !b.enabled {
+		return false
+	}
 
 	now := time.Now()
 	r, ok := b.records[ip]
@@ -99,7 +135,14 @@ func (b *Banner) BanMinutes() int {
 }
 
 // Enabled mengembalikan true bila auto-ban aktif (aman terhadap nil).
-func (b *Banner) Enabled() bool { return b != nil }
+func (b *Banner) Enabled() bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.enabled
+}
 
 // BanInfo adalah satu entri ban aktif untuk ditampilkan di konsol Shield.
 type BanInfo struct {
