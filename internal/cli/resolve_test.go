@@ -60,10 +60,19 @@ func TestParseDockerInspect(t *testing.T) {
 	if pp := dockerPublicPorts(j); len(pp) != 1 || pp[0] != 3000 {
 		t.Fatalf("dockerPublicPorts = %v, want [3000]", pp)
 	}
-	// container only on docker network (no public publish) -> none
+	// localhost-published: not a PUBLIC bypass, but still a host publish that
+	// would block the WAF's bind on that port.
 	jLocal := []byte(`[{"Name":"/x","NetworkSettings":{"IPAddress":"172.18.0.3","Ports":{"8787/tcp":[{"HostIp":"127.0.0.1","HostPort":"8787"}]}},"Config":{"ExposedPorts":{"8787/tcp":{}}}}]`)
 	if pp := dockerPublicPorts(jLocal); len(pp) != 0 {
 		t.Fatalf("dockerPublicPorts(localhost-bound) = %v, want []", pp)
+	}
+	if hp := dockerHostPorts(jLocal, false); len(hp) != 1 || hp[0] != 8787 {
+		t.Fatalf("dockerHostPorts(all) = %v, want [8787]", hp)
+	}
+	// expose-only (no publish): no host ports at all.
+	jExpose := []byte(`[{"Name":"/x","NetworkSettings":{"IPAddress":"172.18.0.3","Ports":{"8787/tcp":null}},"Config":{"ExposedPorts":{"8787/tcp":{}}}}]`)
+	if hp := dockerHostPorts(jExpose, false); len(hp) != 0 {
+		t.Fatalf("dockerHostPorts(expose-only) = %v, want []", hp)
 	}
 }
 

@@ -87,7 +87,7 @@ func Protect(args []string, appVersion string) error {
 		if len(pos) < 2 {
 			return fmt.Errorf("usage: exactuswaf protect docker <container ID or name>")
 		}
-		b, cname, pubPorts, err := resolveDocker(pos[1], o.cPort)
+		b, cname, pubPorts, hostPorts, err := resolveDocker(pos[1], o.cPort)
 		if err != nil {
 			return err
 		}
@@ -96,16 +96,23 @@ func Protect(args []string, appVersion string) error {
 		// port. If the user didn't override --port and the container publishes
 		// one, take it over (otherwise traffic to that port skips the WAF).
 		if publicPort == 0 {
-			if len(pubPorts) > 0 {
+			switch {
+			case len(pubPorts) > 0:
 				publicPort = pubPorts[0]
-			} else {
+			case len(hostPorts) > 0:
+				publicPort = hostPorts[0]
+			default:
 				publicPort = 80
 			}
 		}
-		// If that public port is still owned by Docker's own publish, the WAF
-		// cannot sit in front of it live — explain exactly how to fix it.
-		if contains(pubPorts, publicPort) && !portFree(publicPort) {
-			return dockerBypassError(cname, publicPort)
+		// The WAF reaches the container over the Docker network, so the container
+		// must NOT publish the WAF's port to the host (any interface) — otherwise
+		// the WAF can't bind it. Detect that and explain the fix.
+		if !portFree(publicPort) {
+			if contains(hostPorts, publicPort) {
+				return dockerBypassError(cname, publicPort)
+			}
+			return fmt.Errorf("port %d is already in use by another service; choose a different --port", publicPort)
 		}
 	case isExistingFile(pos[0]):
 		if runtime.GOOS != "linux" {
@@ -440,20 +447,22 @@ func contains(xs []int, v int) bool {
 	return false
 }
 
-// dockerBypassError explains why a publicly-published container can't be fronted
-// live, and the exact steps to fix it.
+// dockerBypassError explains that the container publishes the port the WAF needs,
+// and how to fix it. ExactusWAF reaches the container over the Docker network, so
+// the container should not publish the port to the host at all.
 func dockerBypassError(name string, port int) error {
-	return fmt.Errorf(`container %q publishes port %d directly to the internet, so traffic
-to :%d bypasses the WAF and ExactusWAF cannot bind that port while Docker holds it.
+	return fmt.Errorf(`container %q publishes port %d to the host, which ExactusWAF needs to bind.
+ExactusWAF reaches your container directly over the Docker network, so the
+container does NOT need to publish the port to the host. Remove the publish, then
+re-protect:
 
-To route it through ExactusWAF, make the container listen on localhost only, then re-protect:
-
-  • docker compose:  set its ports to  "127.0.0.1:%d:%d"  then:  docker compose up -d
-  • docker run:      recreate it with  -p 127.0.0.1:%d:%d
+  • docker compose:  replace    ports: ["...:%d:%d"]    with    expose: ["%d"]
+                     then:  docker compose up -d
+  • docker run:      recreate without -p (optionally add  --expose %d )
   then:              exactuswaf protect docker %s --port %d
 
-(Or run the WAF on a different public port with --port <N> and firewall off :%d.)`,
-		name, port, port, port, port, port, port, name, port, port)
+(Only ExactusWAF should listen on port %d; it forwards clean traffic to the container.)`,
+		name, port, port, port, port, port, name, port, port)
 }
 
 func runOut(name string, a ...string) string {
