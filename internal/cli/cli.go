@@ -269,9 +269,31 @@ WantedBy=multi-user.target
 	}
 	_ = exec.Command("systemctl", "daemon-reload").Run()
 	if err := exec.Command("systemctl", "enable", "--now", "exactuswaf-"+name).Run(); err != nil {
-		return fmt.Errorf("failed to start service exactuswaf-%s (check: journalctl -u exactuswaf-%s): %w", name, name, err)
+		return fmt.Errorf("failed to enable service exactuswaf-%s: %w", name, err)
+	}
+	// systemctl returns before a Type=simple unit may crash (e.g. a port bind
+	// failure), so verify it actually stayed up and surface the real reason.
+	time.Sleep(1200 * time.Millisecond)
+	if strings.TrimSpace(runOut("systemctl", "is-active", "exactuswaf-"+name)) != "active" {
+		reason := strings.TrimSpace(runOut("journalctl", "-u", "exactuswaf-"+name, "-n", "6", "--no-pager", "-o", "cat"))
+		_ = exec.Command("systemctl", "disable", "--now", "exactuswaf-"+name).Run()
+		_ = os.Remove(unitPath)
+		_ = os.Remove(sitePath)
+		_ = exec.Command("systemctl", "daemon-reload").Run()
+		hint := ""
+		if strings.Contains(reason, "address already in use") {
+			hint = fmt.Sprintf("\nPort %s is already taken (another service — maybe a global ExactusWAF install). Use a different --port, or stop the other one.", portOf(cfg.Listen))
+		}
+		return fmt.Errorf("service exactuswaf-%s did not start:\n%s%s", name, reason, hint)
 	}
 	return nil
+}
+
+func portOf(listen string) string {
+	if i := strings.LastIndex(listen, ":"); i >= 0 {
+		return listen[i+1:]
+	}
+	return listen
 }
 
 // List shows all protected apps and their service status.
