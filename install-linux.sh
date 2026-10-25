@@ -247,9 +247,26 @@ UNIT
   systemctl daemon-reload
 }
 
+is_private_ip() {
+  case "$1" in
+    10.*|127.*|169.254.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|100.6[4-9].*|100.[7-9][0-9].*|100.1[0-1][0-9].*|100.12[0-7].*|"") return 0;;
+    *) return 1;;
+  esac
+}
 server_ip() {
-  ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' \
-    || hostname -I 2>/dev/null | awk '{print $1}'
+  local local_ip
+  local_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+  [ -n "$local_ip" ] || local_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if is_private_ip "$local_ip"; then
+    # NAT/private: try to find the public IP so the printed link is reachable.
+    local pub
+    pub="$(curl -fsS --max-time 2 https://api.ipify.org 2>/dev/null \
+        || curl -fsS --max-time 2 https://ifconfig.me/ip 2>/dev/null \
+        || curl -fsS --max-time 2 https://icanhazip.com 2>/dev/null)"
+    pub="$(printf '%s' "$pub" | tr -d '[:space:]')"
+    [ -n "$pub" ] && { echo "$pub"; return; }
+  fi
+  echo "$local_ip"
 }
 
 do_install() {

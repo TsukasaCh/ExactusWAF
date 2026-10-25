@@ -95,6 +95,21 @@ server {
 	}
 }
 
+func TestIsPrivateIP(t *testing.T) {
+	priv := []string{"10.45.175.254", "192.168.1.10", "172.16.0.5", "127.0.0.1", "169.254.1.1", "100.64.0.1", "0.0.0.0", "garbage"}
+	pub := []string{"103.189.235.184", "8.8.8.8", "1.1.1.1", "203.0.113.9"}
+	for _, ip := range priv {
+		if !isPrivateIP(ip) {
+			t.Errorf("isPrivateIP(%q) = false, want true", ip)
+		}
+	}
+	for _, ip := range pub {
+		if isPrivateIP(ip) {
+			t.Errorf("isPrivateIP(%q) = true, want false", ip)
+		}
+	}
+}
+
 func TestSanitizeName(t *testing.T) {
 	cases := map[string]string{
 		"my-app":          "my-app",

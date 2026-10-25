@@ -4,7 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"exactuswaf/internal/config"
 )
@@ -172,13 +175,13 @@ func Protect(args []string, appVersion string) error {
 	if err := installService(name, cfg); err != nil {
 		return err
 	}
-	sip := serverIP()
+	host := dashboardHost()
 	fmt.Println("-------------------------------------------------------------")
 	fmt.Printf("  Protected      : %s  (via ExactusWAF on port %d)\n", backend, publicPort)
-	fmt.Printf("  Dashboard      : http://%s:%d\n", nonEmpty(sip, "<server-ip>"), dashPort)
-	fmt.Printf("  Login          : admin  /  %s\n", pass)
+	fmt.Printf("  Dashboard      : http://%s:%d   (admin / %s)\n", host, dashPort, pass)
 	fmt.Printf("  Service        : exactuswaf-%s  (systemctl status exactuswaf-%s)\n", name, name)
 	fmt.Println("-------------------------------------------------------------")
+	fmt.Printf("Open the dashboard port in your firewall if needed:  ufw allow %d/tcp\n", dashPort)
 	if relocateNote != "" {
 		fmt.Println(relocateNote)
 	}
@@ -406,12 +409,6 @@ func argAt(args []string, i int) string {
 	}
 	return ""
 }
-func nonEmpty(s, def string) string {
-	if strings.TrimSpace(s) == "" {
-		return def
-	}
-	return s
-}
 func contains(xs []int, v int) bool {
 	for _, x := range xs {
 		if x == v {
@@ -441,12 +438,62 @@ func runOut(name string, a ...string) string {
 	out, _ := exec.Command(name, a...).Output()
 	return string(out)
 }
-func serverIP() string {
-	// best-effort primary IP
+
+// localIP returns the host's primary outbound IP (may be a private/NAT address).
+func localIP() string {
 	conn, err := net.Dial("udp", "1.1.1.1:80")
 	if err != nil {
 		return ""
 	}
 	defer conn.Close()
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
+}
+
+// isPrivateIP reports whether the address is not reachable from the internet
+// (RFC1918, loopback, link-local, or CGNAT 100.64.0.0/10).
+func isPrivateIP(s string) bool {
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return true
+	}
+	if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return true // 100.64.0.0/10 CGNAT
+	}
+	return false
+}
+
+// publicIP tries to discover the server's public IP (best-effort, short timeout).
+func publicIP() string {
+	client := &http.Client{Timeout: 2 * time.Second}
+	for _, u := range []string{"https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"} {
+		resp, err := client.Get(u)
+		if err != nil {
+			continue
+		}
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+		resp.Body.Close()
+		if ip := net.ParseIP(strings.TrimSpace(string(b))); ip != nil {
+			return ip.String()
+		}
+	}
+	return ""
+}
+
+// dashboardHost returns the best host to show in the dashboard URL: the public
+// IP when the local one is private/NAT, otherwise the local IP.
+func dashboardHost() string {
+	local := localIP()
+	if local != "" && !isPrivateIP(local) {
+		return local
+	}
+	if pub := publicIP(); pub != "" {
+		return pub
+	}
+	if local != "" {
+		return local
+	}
+	return "<server-ip>"
 }
