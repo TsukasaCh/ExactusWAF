@@ -716,17 +716,42 @@ Pages.apps = async function () {
     const name = h("input", { class: "inp", value: editing ? s.name : "", maxlength: "64", placeholder: "e.g. shop", "data-testid": "site-name" });
     const domains = h("input", { class: "inp", value: editing ? (s.domains || []).join(", ") : "", placeholder: "shop.example.com, www.shop.example.com" });
     const backend = h("input", { class: "inp", value: editing ? s.backend : "", placeholder: "http://127.0.0.1:3000", "data-testid": "site-backend" });
-    const port = h("input", { class: "inp", type: "number", min: "0", max: "65535", value: editing && s.port ? String(s.port) : "", placeholder: "optional, e.g. 8081" });
+    const port = h("input", { class: "inp", type: "number", min: "1", max: "65535", value: editing && s.port ? String(s.port) : "", placeholder: "e.g. 8081", "data-testid": "site-port" });
+
+    // Routing mode: by domain (Host header) OR by a dedicated port — never both,
+    // so the fields shown always match the choice.
+    let mode = editing && s.port ? "port" : "domain";
+    const domBox = h("div", {},
+      field("Domain(s) (comma-separated; wildcard like *.example.com allowed)", domains),
+      h("p", { class: "muted", style: "margin:2px 0 0;font-size:13px", text: "Clients reach this app by hostname; the WAF routes by the Host header." }));
+    const portBox = h("div", {},
+      field("Public port for this app", port),
+      h("p", { class: "muted", style: "margin:2px 0 0;font-size:13px", text: "The WAF opens this port for this app. Adding a new port needs a restart to open the socket." }));
+    const domBtn = h("button", { type: "button", text: "By domain", "data-testid": "site-mode-domain" });
+    const portBtn = h("button", { type: "button", text: "By port", "data-testid": "site-mode-port" });
+    const seg = h("div", { class: "seg", role: "group", "aria-label": "Routing mode" }, domBtn, portBtn);
+    function applyMode() {
+      domBtn.className = mode === "domain" ? "on" : "";
+      portBtn.className = mode === "port" ? "on" : "";
+      domBox.style.display = mode === "domain" ? "" : "none";
+      portBox.style.display = mode === "port" ? "" : "none";
+    }
+    domBtn.onclick = () => { mode = "domain"; applyMode(); };
+    portBtn.onclick = () => { mode = "port"; applyMode(); };
+    applyMode();
+
     let close;
     const saveBtn = h("button", { class: "btn primary", "data-testid": "site-save", onclick: save }, ico("check"), editing ? "Save" : "Add application");
     function resetBtn() { saveBtn.disabled = false; saveBtn.innerHTML = ""; saveBtn.append(ico("check"), document.createTextNode(editing ? "Save" : "Add application")); }
     async function save() {
-      const body = {
-        name: name.value.trim(),
-        domains: domains.value.split(",").map((x) => x.trim()).filter(Boolean),
-        backend: backend.value.trim(),
-        port: port.value ? +port.value : 0,
-      };
+      const body = { name: name.value.trim(), backend: backend.value.trim(), domains: [], port: 0 };
+      if (mode === "domain") {
+        body.domains = domains.value.split(",").map((x) => x.trim()).filter(Boolean);
+        if (!body.domains.length) { flash("error", "Enter at least one domain, or switch to “By port”."); return; }
+      } else {
+        body.port = port.value ? +port.value : 0;
+        if (!body.port) { flash("error", "Enter a port, or switch to “By domain”."); return; }
+      }
       saveBtn.disabled = true; saveBtn.textContent = "Saving…";
       try {
         const res = editing ? await API.put("/api/sites/" + s.id, body) : await API.post("/api/sites", body);
@@ -738,11 +763,11 @@ Pages.apps = async function () {
     close = modal(editing ? "Edit application" : "Add application",
       h("div", {},
         field("Name", name),
-        field("Domains (comma-separated; wildcard like *.example.com allowed)", domains),
+        h("div", { class: "field" }, h("span", { class: "lbl", text: "Route this app by" }), seg),
+        domBox, portBox,
         field("Backend URL", backend),
-        field("Dedicated port (optional)", port),
         h("p", { class: "muted", style: "margin:8px 0 0;font-size:13px",
-          text: "Route by domain (Host header) and/or a dedicated port. Leave port empty for domain-only. The Web ACL, Shield and IP sets apply to every application." })),
+          text: "Backend is where the WAF forwards clean traffic. The Web ACL, Shield and IP sets apply to every application." })),
       [h("button", { class: "btn link", onclick: () => close() }, "Cancel"), saveBtn]);
   }
   function render() {
