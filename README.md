@@ -2,274 +2,177 @@
 
 # 🛡️ ExactusWAF
 
-**Firewall untuk website Anda — cukup klik dua kali, langsung terlindungi.**
+**A simple, self-hosted Web Application Firewall written in Go.**
 
-Menyaring serangan hacker (SQL Injection, XSS, Log4Shell, & puluhan CVE terbaru)
-_sebelum_ sampai ke website Anda. Dibuat agar **mudah dipakai siapa saja**, tanpa
-perlu jadi ahli keamanan.
+It sits in front of your website as a reverse proxy and filters attacks
+(SQL injection, XSS, RCE, path traversal, Log4Shell, 700+ CVE & generic
+signatures) **before** they reach your app — managed from an AWS-style console.
 
 </div>
 
 ```
-   Pengunjung  ──►   🛡️ ExactusWAF   ──►   Website Anda
-   (& hacker)        (menyaring &            (aman, hanya
-                      memblokir)              lalu-lintas bersih masuk)
+   Visitors   ──►   🛡️ ExactusWAF   ──►   Your website
+   (& attackers)     (inspect & block)      (only clean traffic)
 ```
 
 ---
 
-## 🎯 Untuk siapa ini?
+## ✨ Features
 
-Anda punya website/aplikasi (toko online, blog, API, panel admin) dan ingin
-melindunginya dari serangan otomatis — **tanpa** menyewa ahli, **tanpa** langganan
-mahal, dan **tanpa** setup yang rumit. Cukup taruh ExactusWAF di depan website Anda.
-
----
-
-## 🚀 Mulai dalam 3 Langkah (Windows)
-
-> Tidak perlu memasang apa pun. File `exactuswaf.exe` sudah disertakan.
-
-**1️⃣ Beri tahu alamat website Anda**
-Buka file **`config.yaml`** dengan Notepad. Ubah satu baris ini:
-```yaml
-backend: "http://127.0.0.1:3000"    # ← ganti ke alamat website asli Anda
-```
-*(Misal website Anda jalan di port 8000, tulis `http://127.0.0.1:8000`)*
-
-**2️⃣ Jalankan**
-Klik dua kali **`Jalankan-ExactusWAF.bat`**. Selesai — WAF langsung aktif. ✅
-
-**3️⃣ Akses lewat WAF**
-- Buka website Anda di **`http://localhost:8080`** (lewat WAF, bukan port asli)
-- Pantau serangan di **`http://localhost:9090`** (login: `admin`, password ada di `config.yaml`)
-
-Itu saja. 🎉
+- **730+ detection signatures** (v2026.10.2) — recent CVEs (SharePoint ToolShell,
+  FortiWeb, wp2shell, react2shell, Log4Shell, Spring4Shell, …) plus broad generic
+  classes: SQLi, XSS, RCE/command injection, LFI/path traversal, SSTI,
+  insecure deserialization, SSRF, NoSQL injection, XXE, webshell uploads,
+  auth/JWT bypass, scanners and sensitive-file probing.
+- **Web ACL console** — a management UI (like AWS WAF & Shield): compose your own
+  Web ACL from the signature catalog and set each signature to **Block** or
+  **Count**. Changes apply to the live engine instantly, no restart.
+- **Shield** — automatic temporary IP ban for repeat attackers (CGNAT-safe
+  `ip_ua` scope) and per-IP rate limiting.
+- **Real-time dashboard** — traffic chart, top rules/IPs, recent attacks,
+  light/dark theme. Session login with brute-force lockout.
+- **Runs anywhere** — one-command installer for Ubuntu/Debian, Docker (Windows
+  containers), or build from source. Rules & console are embedded in the binary.
+- **Monitor mode** — try rules without blocking before you enforce them.
 
 ---
 
-## 🐧 Untuk Linux / macOS
+## 🚀 Quick start — Ubuntu / Debian (recommended)
+
+The installer builds ExactusWAF, puts it **in front of your existing web server**
+(nginx or apache2), and runs it as a `systemd` service.
 
 ```bash
-bash install.sh      # membangun program (butuh Go: https://go.dev/dl/)
-nano config.yaml     # arahkan 'backend' ke website Anda
-./exactuswaf         # jalankan
+# 1. Get the code
+git clone https://github.com/TsukasaCh/ExactusWAF.git
+cd ExactusWAF
+
+# 2. Run the installer as root
+sudo bash install-linux.sh
 ```
 
----
+That's it. The installer will:
 
-## ✨ Yang Dilindungi
+1. Build the `exactuswaf` binary (it downloads Go automatically if needed).
+2. Detect **nginx** or **apache2**, back up its config, and move it to an
+   internal port (`127.0.0.1:8080`) — only the HTTP `:80` listeners are changed,
+   `:443` is left untouched.
+3. Put **ExactusWAF on port 80** so it inspects every request and forwards clean
+   traffic to your site (your app still sees the real client IP via
+   `X-Forwarded-For`).
+4. Start the service and print the **dashboard URL, username and a random password**.
 
-ExactusWAF membawa **30+ aturan siap pakai**, termasuk kerentanan (CVE) terbaru:
+Open the dashboard at **`http://<your-server-ip>:8991`** and log in as `admin`
+with the password shown by the installer.
 
-| Jenis Serangan | Contoh yang Dicegah |
-|---|---|
-| 💉 **SQL Injection** | Pencurian isi database lewat form/URL |
-| 🔗 **Cross-Site Scripting (XSS)** | Penyisipan script jahat ke halaman |
-| 📂 **Path Traversal / LFI** | Membaca file rahasia server (`/etc/passwd`, `.env`) |
-| 💻 **Command Injection / RCE** | Menjalankan perintah di server Anda |
-| 🌐 **SSRF & XXE** | Memaksa server mengakses sumber internal |
-| 🔍 **Scanner otomatis** | sqlmap, nikto, nuclei, dsb. |
-| 🚨 **CVE terkini** | Log4Shell (CVE-2021-44228), Spring4Shell (CVE-2022-22965), MOVEit, Citrix, Ivanti, PAN-OS (CVE-2024-3400), PHP-CGI (CVE-2024-4577), Confluence, F5 BIG-IP, Struts2, dan banyak lagi |
+**Options:**
 
-**Fitur pelengkap:**
-- 🔨 **Auto-Ban** — IP yang menyerang berulang otomatis diblokir sementara *(aktif otomatis)*
-- 📊 **Dashboard** real-time di browser
-- 📱 **Notifikasi Telegram** saat ada serangan *(opsional)*
-- 🚦 **Rate limiting** — cegah banjir permintaan
-- 📋 **Blocklist / allowlist IP**
-- 🧪 **Mode monitor** — uji coba dulu tanpa memblokir
-- 🔒 **HTTPS** opsional
-
----
-
-## 📊 Dashboard Pemantauan (GUI Realtime)
-
-Ada dua cara membuka dashboard:
-- **Seperti aplikasi:** klik dua kali **`Dashboard-ExactusWAF.bat`** — terbuka
-  dalam jendela aplikasi tersendiri (tanpa address bar).
-- **Di browser biasa:** buka `http://localhost:9090` (login user `admin`).
-
-Isi dashboard (menyegar otomatis tiap 2 detik):
-
-| Panel | Menampilkan |
-|---|---|
-| 📈 **Kartu statistik** | Total permintaan, serangan diblokir, permintaan aman, jumlah aturan aktif, lama aktif |
-| 🎯 **Aturan yang Teraplikasi** | Aturan mana saja yang **terpicu**, berapa kali, lengkap CVE & tingkat bahaya — dalam bentuk bar realtime |
-| 🌐 **Total Hit per IP** | Peringkat IP penyerang berdasarkan jumlah hit |
-| 📜 **Serangan Terbaru** | Daftar kejadian terakhir: waktu, IP, path, aturan, CVE, aksi |
-
----
-
-## ⚙️ Pengaturan (`config.yaml`)
-
-Semua diatur lewat satu file `config.yaml` yang bisa diedit di Notepad.
-Baris paling penting:
-
-| Pengaturan | Arti | Saran |
+| Flag | Meaning | Default |
 |---|---|---|
-| `backend` | Alamat website asli Anda | **wajib diisi** |
-| `mode` | `block` atau `monitor` | mulai `monitor`, lalu `block` |
-| `dashboard.password` | Password dashboard | **ganti dari default!** |
-| `auto_ban` | Blokir otomatis penyerang | biarkan aktif |
-| `auto_ban.scope` | `ip_ua` (aman utk IP bersama/CGNAT) atau `ip` | `ip_ua` untuk web publik |
-| `trust_proxy_headers` | Percaya header IP dari proxy depan | `true` **hanya** bila di belakang Nginx/Cloudflare |
-| `rate_limit` | Batas permintaan per IP | sesuaikan trafik Anda |
+| `--backend URL` | Protect this backend when no web server is detected (e.g. `http://127.0.0.1:3000`) | auto |
+| `--mode block\|monitor` | Start mode | `block` |
+| `--dash-port N` | Dashboard port | `8991` |
+| `--waf-port N` | Public port ExactusWAF listens on | `80` |
+| `--no-webserver` | Don't touch nginx/apache; just use `--backend` | — |
+| `--uninstall` | Remove ExactusWAF and restore the web server config from backup | — |
 
-> 💡 **Tips untuk pertama kali:** pakai `mode: monitor` selama 1–2 hari. WAF hanya
-> mencatat (tidak memblokir), jadi Anda bisa memastikan tidak ada pengunjung sah
-> yang salah tangkap. Setelah yakin, ubah ke `mode: block`.
+Manage the service:
 
----
-
-## 📱 Notifikasi Telegram (opsional, 5 menit)
-
-Ingin dapat pesan di HP tiap kali ada IP diblokir otomatis?
-
-1. Buka Telegram, chat **@BotFather** → ketik `/newbot` → ikuti langkahnya → **salin token bot**.
-2. Chat **@userinfobot** → salin angka **Id** Anda.
-3. Kirim satu pesan apa saja ke bot baru Anda (agar bot boleh mengirim pesan).
-4. Isi di `config.yaml`:
-   ```yaml
-   notify:
-     telegram:
-       enabled: true
-       bot_token: "TOKEN_DARI_BOTFATHER"
-       chat_id: "ID_ANDA"
-   ```
-5. Jalankan ulang ExactusWAF — Anda akan langsung menerima pesan "ExactusWAF aktif".
-
----
-
-## ❓ Pertanyaan Umum & Masalah
-
-<details>
-<summary><b>Muncul error "socket ... forbidden" saat dijalankan</b></summary>
-
-Port 8080 sedang dipakai program lain atau dikunci Windows (sering karena
-Hyper-V/WSL). **Solusi:** buka `config.yaml`, ubah `listen` ke port lain seperti
-`0.0.0.0:8000` atau `0.0.0.0:8088`, lalu jalankan lagi.
-</details>
-
-<details>
-<summary><b>Muncul "502 Bad Gateway"</b></summary>
-
-WAF berhasil jalan, tapi website asli Anda (`backend`) sedang mati. Pastikan
-aplikasi Anda berjalan dan alamat `backend` di `config.yaml` sudah benar.
-</details>
-
-<details>
-<summary><b>Pengunjung yang sah ikut terblokir</b></summary>
-
-Ubah sementara ke `mode: monitor`, lihat di dashboard aturan mana yang memicu,
-lalu masukkan IP tepercaya (mis. IP kantor Anda) ke `ip_allowlist` di `config.yaml`.
-</details>
-
-<details>
-<summary><b>Apakah harus memasang Go?</b></summary>
-
-**Windows:** tidak. File `exactuswaf.exe` sudah disertakan, tinggal klik.
-Anda hanya perlu Go bila ingin **membangun ulang** setelah mengubah kode/aturan
-(pakai `Build-ExactusWAF.bat`).
-**Linux/macOS:** ya, untuk membangun binary lewat `install.sh`.
-</details>
-
-<details>
-<summary><b>Apakah auto-ban bisa menyeret pengguna lain di ISP yang sama (Telkomsel, dll.)?</b></summary>
-
-Pertanyaan bagus. Banyak ISP (terutama seluler seperti Telkomsel/Indosat) memakai
-**CGNAT** — ribuan pengguna berbagi satu IP publik. Memblokir IP mentah bisa
-menyeret orang tak bersalah.
-
-ExactusWAF mengatasinya dengan **dua cara**:
-
-1. **`auto_ban.scope: ip_ua`** (default). Ban tidak hanya berdasarkan IP, tapi
-   IP **+ jenis peramban**. Pengguna sah yang memakai browser biasa tidak berbagi
-   "identitas" dengan alat serangan (sqlmap, bot, dll.), jadi mereka **tidak ikut
-   terblokir** walau berbagi IP yang sama.
-2. **Setiap serangan tetap diblokir per-permintaan** oleh aturan WAF, terlepas dari
-   auto-ban. Jadi perlindungan situs **tidak bergantung** pada ban IP — auto-ban
-   hanya "bonus" untuk menghentikan pemindai yang membandel.
-
-Kalau audiens Anda dipastikan ber-IP unik (mis. jaringan kantor), Anda boleh pakai
-`scope: ip` yang lebih ketat. Untuk web publik, biarkan `ip_ua`. Anda juga selalu
-bisa menambah IP tepercaya ke `ip_allowlist`.
-</details>
-
-<details>
-<summary><b>Kenapa `trust_proxy_headers` default-nya false?</b></summary>
-
-Bila WAF langsung menghadap internet, header seperti `X-Forwarded-For` **bisa
-dipalsukan** penyerang — untuk menghindari ban, atau justru untuk sengaja memban
-IP orang lain. Maka header itu diabaikan secara default (WAF memakai IP koneksi
-asli). **Aktifkan `true` hanya** jika ExactusWAF berdiri di belakang reverse proxy
-tepercaya (Nginx/Cloudflare/Load Balancer) yang menambahkan header itu.
-</details>
-
-<details>
-<summary><b>Apakah ini menggantikan Cloudflare / antivirus?</b></summary>
-
-Tidak sepenuhnya. ExactusWAF adalah **satu lapis pertahanan**. Tetap lakukan
-praktik dasar: perbarui software, pakai password kuat, dan validasi input di
-aplikasi Anda. Keamanan itu berlapis. 🧅
-</details>
-
----
-
-## 🔄 Menambah / Memperbarui Aturan CVE
-
-Aturan ada di `internal/rules/cve_rules.json`. Untuk menambah aturan tanpa
-compile ulang, arahkan `rules_file` di `config.yaml` ke file itu, lalu tambahkan blok:
-
-```json
-{
-  "id": "CVE-2025-XXXXX",
-  "name": "Nama singkat serangan",
-  "cve": "CVE-2025-XXXXX",
-  "severity": "critical",
-  "category": "rce",
-  "target": "all",
-  "pattern": "(?i)pola-regex-untuk-mendeteksi"
-}
-```
-`target` bisa `url`, `header`, `body`, atau `all`.
-
----
-
-## 🧪 Uji Cepat (opsional)
-
-Setelah WAF jalan, dari terminal:
 ```bash
-# Harus DIBLOKIR (HTTP 403):
-curl "http://localhost:8080/.env"
-
-# Harus LOLOS (HTTP 200):
-curl "http://localhost:8080/"
+systemctl status exactuswaf      # is it running?
+systemctl restart exactuswaf     # after editing the config
+journalctl -u exactuswaf -f      # live logs
 ```
+
+Configuration lives at `/etc/exactuswaf/config.yaml`.
+Uninstall with `sudo bash install-linux.sh --uninstall`.
 
 ---
 
-## 📁 Isi Folder
+## 🐳 Run with Docker (Windows Server / Windows containers)
 
+> The included `Dockerfile` and `docker-compose.yml` target **Windows containers**
+> (Nano Server). On Linux, use the installer above or build from source.
+
+```powershell
+docker compose up -d --build
 ```
-ExactusWAF/
-├── Jalankan-ExactusWAF.bat     ← klik untuk menjalankan (Windows)
-├── Dashboard-ExactusWAF.bat    ← klik untuk membuka dashboard (GUI)
-├── Build-ExactusWAF.bat        ← klik untuk membangun ulang
-├── install.sh                  ← installer Linux/macOS
-├── config.yaml                 ← pengaturan (edit di sini)
-├── exactuswaf.exe              ← program siap jalan (Windows)
-├── PANDUAN-SINGKAT.txt         ← panduan super ringkas
-├── main.go                     ← kode utama
-└── internal/                   ← mesin WAF, aturan, dashboard, dll.
+
+- Website through the WAF: `http://localhost:8080`
+- Dashboard: double-click `Dashboard-ExactusWAF.bat` (it finds the container IP;
+  the dashboard port is intentionally not published to the network)
+- Edit `docker\config.yaml` then `docker compose up -d --build` to apply changes.
+- The sample `example-site` service is only there to demo protection — remove it
+  and point `backend` at your real site.
+
+---
+
+## 🔧 Run from source (any OS with Go ≥ 1.24)
+
+```bash
+go build -o exactuswaf .     # or: go build -o exactuswaf.exe . on Windows
+cp config.yaml myconfig.yaml # edit "backend" to point at your site
+./exactuswaf -config myconfig.yaml
 ```
+
+Visitors go through `listen` (default `0.0.0.0:8080`); the dashboard is on
+`dashboard.listen`.
+
+---
+
+## 🧭 Using the console
+
+1. **Log in** at the dashboard URL (user `admin`, password from the installer or
+   `dashboard.password` in the config).
+2. **Overview** shows live traffic (allowed / blocked / counted), top signatures
+   and IPs, and recent attacks.
+3. **Web ACL** → *Create Web ACL*: pick signatures from the catalog and set each
+   to **Block** (reject the request) or **Count** (log only, let it through —
+   great for testing). Save, then **Activate** it — it applies instantly.
+4. **Signatures** browses the full catalog (filter by name/CVE/group).
+5. **Shield** shows auto-ban settings and currently blocked IPs (with *Unblock*).
+6. **Settings** lets you switch between **Block** and **Monitor** mode live.
+
+> **Tip:** for a brand-new deployment, run in **Monitor mode** for a day first.
+> Everything is only counted, so you can confirm no legitimate visitor is caught
+> before switching to **Block**.
+
+---
+
+## ⚙️ Configuration (`config.yaml`)
+
+| Key | Meaning |
+|---|---|
+| `listen` | Address ExactusWAF listens on (what visitors hit) |
+| `backend` | Your real website/app, e.g. `http://127.0.0.1:8080` |
+| `mode` | `block` (reject attacks) or `monitor` (count only) |
+| `dashboard.listen` / `dashboard.password` | Console address and admin password |
+| `rate_limit` | Requests per minute per IP, with burst |
+| `auto_ban` | Temporary ban for repeat attackers; `scope: ip_ua` is CGNAT-safe |
+| `ip_blocklist` / `ip_allowlist` | Always-block / always-allow IPs |
+| `trust_proxy_headers` | `true` only if behind another trusted proxy (nginx/Cloudflare) |
+| `tls` | Optional HTTPS (cert/key paths) |
+| `data_dir` | Where Web ACLs are persisted |
+| `rules_file` | Custom rules file; empty = use the built-in catalog |
+
+---
+
+## 🔒 Security notes
+
+- The dashboard is an **admin interface**. Restrict access to it, e.g.
+  `ufw allow from <your-ip> to any port 8991`, or reach it over an SSH tunnel.
+  Always change the default/placeholder password.
+- The Linux installer fronts **HTTP (:80)** only. For HTTPS, terminate TLS at
+  ExactusWAF (`tls.*` in the config) or in front of it.
+- ExactusWAF is **one layer** of defense — keep your software patched and keep
+  good input validation in your app too.
 
 ---
 
 <div align="center">
 
-Lisensi **MIT** — bebas dipakai, dibagikan, dan dimodifikasi.
+**MIT License** — free to use, share and modify.
 
-Buatlah web Anda lebih aman. 🛡️
+Make your web safer. 🛡️
 
 </div>

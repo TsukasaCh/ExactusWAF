@@ -148,6 +148,8 @@ button { font-family: inherit; }
 .sidenav {
   width: 264px; flex: none; background: var(--sidenav); border-right: 1px solid var(--border);
   padding: 18px 0 24px; overflow-y: auto;
+  /* Tetap menempel saat konten digulir (di bawah top nav setinggi 48px). */
+  position: sticky; top: 48px; align-self: flex-start; height: calc(100vh - 48px);
 }
 .sidenav h2 { padding: 0 20px; font-size: 15px; margin-bottom: 14px; }
 .sidenav .sec { padding: 14px 20px 6px; font-size: 11px; font-weight: 700; letter-spacing: .04em;

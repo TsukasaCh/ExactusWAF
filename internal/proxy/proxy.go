@@ -50,11 +50,12 @@ func New(cfg *config.Config, plan *waf.Plan, st *stats.Store) (*Server, error) {
 	}
 
 	rp := httputil.NewSingleHostReverseProxy(target)
-	// Perbaiki header Host agar backend menerima host aslinya.
 	origDirector := rp.Director
 	rp.Director = func(r *http.Request) {
 		origDirector(r)
-		r.Host = target.Host
+		// Pertahankan Host asli dari klien (JANGAN ditimpa ke host backend) agar
+		// name-based virtual host di belakang (nginx/apache) tetap me-route dengan
+		// benar saat ExactusWAF dipasang di depan web server.
 		// Browser tidak membedakan cookie per port, jadi cookie sesi dashboard
 		// bisa ikut terkirim ke sini. Jangan sampai bocor ke backend.
 		stripCookie(r.Header, dashboard.SessionCookie)
@@ -169,6 +170,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 1. IP allowlist -> lewati semua pemeriksaan.
 	if s.allowSet[ip] {
 		s.stats.IncAllowed()
+		setForwarded(r, ip)
 		s.proxy.ServeHTTP(w, r)
 		return
 	}
@@ -243,7 +245,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 6. Bersih -> teruskan ke backend.
 	s.stats.IncAllowed()
+	setForwarded(r, ip)
 	s.proxy.ServeHTTP(w, r)
+}
+
+// setForwarded memberi tahu backend IP & skema asli klien (penting saat
+// ExactusWAF berdiri di depan web server). Dipanggil tepat sebelum meneruskan,
+// jadi pemeriksaan WAF di atas hanya melihat header asli klien.
+func setForwarded(r *http.Request, ip string) {
+	// X-Forwarded-For ditangani otomatis oleh httputil.ReverseProxy (append dari
+	// RemoteAddr). Kita hanya menambah X-Real-IP + skema/host.
+	r.Header.Set("X-Real-IP", ip)
+	proto := "http"
+	if r.TLS != nil {
+		proto = "https"
+	}
+	r.Header.Set("X-Forwarded-Proto", proto)
+	if r.Header.Get("X-Forwarded-Host") == "" {
+		r.Header.Set("X-Forwarded-Host", r.Host)
+	}
 }
 
 // event menyusun stats.Event dari sebuah match WAF.

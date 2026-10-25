@@ -71,6 +71,44 @@ func TestBodyBesarDiteruskanUtuh(t *testing.T) {
 	}
 }
 
+// TestForwardHostDanClientIP memastikan Host asli diteruskan (agar vhost backend
+// me-route benar) dan X-Forwarded-For berisi IP klien asli.
+func TestForwardHostDanClientIP(t *testing.T) {
+	var gotHost, gotXFF, gotProto string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotXFF = r.Header.Get("X-Forwarded-For")
+		gotProto = r.Header.Get("X-Forwarded-Proto")
+	}))
+	defer backend.Close()
+
+	cat, err := waf.LoadCatalog("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := webacl.NewStore("", cat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(&config.Config{Backend: backend.URL, Mode: "block"}, store.Plan(), stats.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "shop.example.com"
+	req.RemoteAddr = "203.0.113.55:40000"
+	srv.ServeHTTP(httptest.NewRecorder(), req)
+	if gotHost != "shop.example.com" {
+		t.Fatalf("backend menerima Host %q, harusnya host asli shop.example.com", gotHost)
+	}
+	if gotXFF != "203.0.113.55" {
+		t.Fatalf("X-Forwarded-For %q, harusnya 203.0.113.55", gotXFF)
+	}
+	if gotProto != "http" {
+		t.Fatalf("X-Forwarded-Proto %q, harusnya http", gotProto)
+	}
+}
+
 func TestCookieSesiDashboardTidakSampaiKeBackend(t *testing.T) {
 	var got string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

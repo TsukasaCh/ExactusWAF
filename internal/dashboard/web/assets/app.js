@@ -342,7 +342,7 @@ function buildShell() {
     h("h2", { text: "ExactusWAF & Shield" }),
     NAV.map((n) => n.sec ? h("div", { class: "sec", text: n.sec }) :
       h("a", { href: n.href, "data-nav": n.href }, ico(n.icon), n.label)),
-    h("div", { class: "foot", text: "ExactusWAF v" + m.app_version + " · rules " + m.rules_updated }));
+    h("div", { class: "foot", text: "ExactusWAF v2.0" }));
 
   const scrim = h("div", { class: "scrim", onclick: () => { State.navOpen = false; document.getElementById("app").classList.remove("nav-open"); } });
   const content = h("main", { class: "content", id: "content" });
