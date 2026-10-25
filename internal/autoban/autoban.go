@@ -2,6 +2,7 @@
 package autoban
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -95,6 +96,58 @@ func (b *Banner) BanMinutes() int {
 		return 0
 	}
 	return int(b.banDur.Minutes())
+}
+
+// Enabled mengembalikan true bila auto-ban aktif (aman terhadap nil).
+func (b *Banner) Enabled() bool { return b != nil }
+
+// BanInfo adalah satu entri ban aktif untuk ditampilkan di konsol Shield.
+type BanInfo struct {
+	Key         string    `json:"key"`          // kunci internal (untuk buka blokir)
+	IP          string    `json:"ip"`           // IP yang terlihat
+	Until       time.Time `json:"until"`        // kapan ban berakhir
+	SecondsLeft int       `json:"seconds_left"` // sisa waktu ban (detik)
+}
+
+// List mengembalikan semua ban yang masih aktif, terbaru berakhir di urutan awal.
+func (b *Banner) List() []BanInfo {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := time.Now()
+	var out []BanInfo
+	for key, r := range b.records {
+		if now.Before(r.bannedTil) {
+			ip, _, _ := cutKey(key)
+			out = append(out, BanInfo{
+				Key: key, IP: ip, Until: r.bannedTil,
+				SecondsLeft: int(time.Until(r.bannedTil).Seconds()),
+			})
+		}
+	}
+	return out
+}
+
+// Unban mencabut ban untuk sebuah kunci. Mengembalikan true bila ada yang dicabut.
+func (b *Banner) Unban(key string) bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	r, ok := b.records[key]
+	if !ok || !time.Now().Before(r.bannedTil) {
+		return false
+	}
+	delete(b.records, key)
+	return true
+}
+
+// cutKey memisahkan IP dari sidik jari User-Agent pada kunci ban ("ip" atau "ip|hash").
+func cutKey(key string) (ip, ua string, hasUA bool) {
+	return strings.Cut(key, "|")
 }
 
 func (b *Banner) janitor() {

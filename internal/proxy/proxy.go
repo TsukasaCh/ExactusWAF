@@ -14,10 +14,12 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"exactuswaf/internal/autoban"
 	"exactuswaf/internal/config"
+	"exactuswaf/internal/dashboard"
 	"exactuswaf/internal/notify"
 	"exactuswaf/internal/ratelimit"
 	"exactuswaf/internal/stats"
@@ -26,22 +28,22 @@ import (
 
 // Server menyatukan reverse proxy dengan mesin WAF.
 type Server struct {
-	cfg       *config.Config
-	rules     *waf.RuleSet
-	limiter   *ratelimit.Limiter
-	banner    *autoban.Banner
-	notifier  *notify.Notifier
-	stats     *stats.Store
-	proxy     *httputil.ReverseProxy
+	cfg        *config.Config
+	plan       atomic.Pointer[waf.Plan] // plan Web ACL aktif; diganti tanpa restart
+	limiter    *ratelimit.Limiter
+	banner     *autoban.Banner
+	notifier   *notify.Notifier
+	stats      *stats.Store
+	proxy      *httputil.ReverseProxy
 	blockSet   map[string]bool
 	allowSet   map[string]bool
-	blockMode  bool
+	blockMode  atomic.Bool
 	trustProxy bool
 	banScope   string
 }
 
-// New membuat Server WAF.
-func New(cfg *config.Config, rules *waf.RuleSet, st *stats.Store) (*Server, error) {
+// New membuat Server WAF dengan plan Web ACL awal.
+func New(cfg *config.Config, plan *waf.Plan, st *stats.Store) (*Server, error) {
 	target, err := url.Parse(cfg.Backend)
 	if err != nil {
 		return nil, err
@@ -53,6 +55,9 @@ func New(cfg *config.Config, rules *waf.RuleSet, st *stats.Store) (*Server, erro
 	rp.Director = func(r *http.Request) {
 		origDirector(r)
 		r.Host = target.Host
+		// Browser tidak membedakan cookie per port, jadi cookie sesi dashboard
+		// bisa ikut terkirim ke sini. Jangan sampai bocor ke backend.
+		stripCookie(r.Header, dashboard.SessionCookie)
 	}
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("[proxy] gagal menghubungi backend %s: %v", cfg.Backend, err)
@@ -61,16 +66,19 @@ func New(cfg *config.Config, rules *waf.RuleSet, st *stats.Store) (*Server, erro
 	}
 
 	s := &Server{
-		cfg:       cfg,
-		rules:     rules,
-		stats:     st,
-		proxy:     rp,
+		cfg:        cfg,
+		stats:      st,
+		proxy:      rp,
 		blockSet:   toSet(cfg.IPBlock),
 		allowSet:   toSet(cfg.IPAllow),
-		blockMode:  cfg.Mode == "block",
 		trustProxy: cfg.TrustProxyHeaders,
 		banScope:   cfg.AutoBan.Scope,
 	}
+	s.blockMode.Store(cfg.Mode == "block")
+	if plan == nil {
+		plan = &waf.Plan{}
+	}
+	s.plan.Store(plan)
 	if cfg.RateLimit.Enabled {
 		s.limiter = ratelimit.New(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst)
 	}
@@ -85,12 +93,72 @@ func New(cfg *config.Config, rules *waf.RuleSet, st *stats.Store) (*Server, erro
 	return s, nil
 }
 
+// SetPlan mengganti plan Web ACL aktif tanpa menghentikan server. Aman dipanggil
+// dari goroutine lain (mis. saat pengguna mengganti Web ACL dari konsol).
+func (s *Server) SetPlan(p *waf.Plan) {
+	if p == nil {
+		p = &waf.Plan{}
+	}
+	s.plan.Store(p)
+}
+
+// Banner mengembalikan daftar auto-ban (untuk halaman Shield di konsol).
+func (s *Server) Banner() *autoban.Banner { return s.banner }
+
+// Mode mengembalikan mode kerja WAF saat ini ("block" atau "monitor").
+func (s *Server) Mode() string {
+	if s.blockMode.Load() {
+		return "block"
+	}
+	return "monitor"
+}
+
+// SetMode mengganti mode kerja WAF tanpa restart.
+func (s *Server) SetMode(mode string) error {
+	switch mode {
+	case "block":
+		s.blockMode.Store(true)
+	case "monitor":
+		s.blockMode.Store(false)
+	default:
+		return fmt.Errorf("mode harus 'block' atau 'monitor'")
+	}
+	return nil
+}
+
 func toSet(list []string) map[string]bool {
 	m := make(map[string]bool, len(list))
 	for _, v := range list {
 		m[strings.TrimSpace(v)] = true
 	}
 	return m
+}
+
+// stripCookie membuang satu cookie dari header Cookie tanpa mengubah cookie lain.
+func stripCookie(h http.Header, name string) {
+	vals := h.Values("Cookie")
+	var kept []string
+	removed := false
+	for _, v := range vals {
+		for _, part := range strings.Split(v, ";") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if k, _, _ := strings.Cut(part, "="); strings.TrimSpace(k) == name {
+				removed = true
+				continue
+			}
+			kept = append(kept, part)
+		}
+	}
+	if !removed {
+		return
+	}
+	h.Del("Cookie")
+	if len(kept) > 0 {
+		h.Set("Cookie", strings.Join(kept, "; "))
+	}
 }
 
 // ServeHTTP adalah handler utama untuk semua permintaan masuk.
@@ -137,36 +205,59 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Inspeksi WAF (URL, header, body).
+	// Hanya 512 KB pertama yang diperiksa, TAPI body asli diteruskan utuh:
+	// gabungkan bagian yang sudah dibaca dengan sisa body yang belum dibaca,
+	// dan JANGAN menimpa Content-Length (biar backend menerima panjang asli).
 	body, err := waf.ReadBodyLimited(r)
 	if err == nil && body != nil {
-		// Kembalikan body agar bisa diteruskan ke backend.
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.ContentLength = int64(len(body))
+		if r.Body != nil {
+			r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), r.Body))
+		} else {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
 	}
 
-	if match := s.rules.Inspect(r, body); match != nil {
-		// Setiap serangan dihitung sebagai "strike" untuk auto-ban.
+	dec := s.plan.Load().Evaluate(r, body)
+	if dec.Matched() {
+		// Satu serangan = satu strike auto-ban (tak peduli berapa signature cocok).
 		s.registerStrike(ip, r)
-		ev := stats.Event{
-			Time: time.Now(), IP: ip, Method: r.Method, Path: r.URL.Path,
-			RuleID: match.RuleID, RuleName: match.RuleName, CVE: match.CVE,
-			Severity: match.Severity,
-		}
-		if s.blockMode {
-			ev.Action = "blocked"
-			s.deny(w, r, ip, ev, match.Category, "Permintaan diblokir oleh ExactusWAF")
+	}
+
+	// Signature beraksi "count": selalu dicatat, tidak pernah memblokir.
+	for _, m := range dec.Counts {
+		s.record(r, ip, m, "counted")
+		log.Printf("[COUNT] %s %s dari %s | %s (%s)", r.Method, r.URL.Path, ip, m.RuleName, m.RuleID)
+	}
+
+	// Signature beraksi "block": blokir hanya di mode block; di mode pantau dicatat.
+	if dec.Block != nil {
+		if s.blockMode.Load() {
+			ev := event(r, ip, dec.Block, "blocked")
+			s.deny(w, r, ip, ev, dec.Block.Category, "Permintaan diblokir oleh ExactusWAF")
 			return
 		}
-		// Mode monitor: catat tapi teruskan.
-		ev.Action = "monitored"
-		s.stats.RecordBlock(ev, match.Category)
+		s.record(r, ip, dec.Block, "monitored")
 		log.Printf("[MONITOR] %s %s dari %s | %s (%s) bukti=%q",
-			r.Method, r.URL.Path, ip, match.RuleName, match.CVE, match.Evidence)
+			r.Method, r.URL.Path, ip, dec.Block.RuleName, dec.Block.RuleID, dec.Block.Evidence)
 	}
 
 	// 6. Bersih -> teruskan ke backend.
 	s.stats.IncAllowed()
 	s.proxy.ServeHTTP(w, r)
+}
+
+// event menyusun stats.Event dari sebuah match WAF.
+func event(r *http.Request, ip string, m *waf.Match, action string) stats.Event {
+	return stats.Event{
+		Time: time.Now(), IP: ip, Method: r.Method, Path: r.URL.Path,
+		RuleID: m.RuleID, RuleName: m.RuleName, CVE: m.CVE,
+		Severity: m.Severity, Action: action,
+	}
+}
+
+// record mencatat satu match (count/monitor) ke statistik.
+func (s *Server) record(r *http.Request, ip string, m *waf.Match, action string) {
+	s.stats.RecordBlock(event(r, ip, m, action), m.Category)
 }
 
 // registerStrike mencatat pelanggaran untuk auto-ban dan mengirim notifikasi
@@ -179,11 +270,9 @@ func (s *Server) registerStrike(ip string, r *http.Request) {
 		return
 	}
 	mins := s.banner.BanMinutes()
-	s.stats.RecordBlock(stats.Event{
-		Time: time.Now(), IP: ip, Method: r.Method, Path: r.URL.Path,
-		RuleID: "AUTO-BAN", RuleName: fmt.Sprintf("IP diblokir otomatis %d menit", mins),
-		Severity: "high", Action: "auto-banned",
-	}, "auto-ban")
+	// Catatan: permintaan pemicu ini SUDAH dihitung (blocked/counted) di ServeHTTP,
+	// jadi milestone ban tidak dicatat ulang ke statistik agar tidak dobel-hitung.
+	// Permintaan berikutnya dari IP yang sama akan tercatat sebagai "auto-banned".
 	log.Printf("[AUTO-BAN] %s diblokir %d menit setelah serangan berulang", ip, mins)
 	s.notifier.Send(fmt.Sprintf(
 		"🚫 <b>IP diblokir otomatis</b>\nIP: <code>%s</code>\nDurasi: %d menit\nTerakhir: %s %s",

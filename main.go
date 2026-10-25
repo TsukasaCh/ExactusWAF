@@ -1,9 +1,10 @@
 // ExactusWAF - Web Application Firewall sederhana berbasis Go.
 //
 // Cara pakai:
-//   exactuswaf                 -> memakai config.yaml di folder yang sama
-//   exactuswaf -config lain.yaml
-//   exactuswaf -version
+//
+//	exactuswaf                 -> memakai config.yaml di folder yang sama
+//	exactuswaf -config lain.yaml
+//	exactuswaf -version
 package main
 
 import (
@@ -13,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"exactuswaf/internal/config"
@@ -20,9 +22,10 @@ import (
 	"exactuswaf/internal/proxy"
 	"exactuswaf/internal/stats"
 	"exactuswaf/internal/waf"
+	"exactuswaf/internal/webacl"
 )
 
-const version = "1.0.0"
+const version = "2.0.0"
 
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "path ke file konfigurasi")
@@ -41,6 +44,9 @@ func main() {
 	if err != nil {
 		fatal("Konfigurasi bermasalah", err)
 	}
+	for _, w := range cfg.Warnings {
+		fmt.Fprintf(os.Stderr, "⚠️  %s\n", w)
+	}
 
 	// 2. Siapkan log.
 	if cfg.LogFile != "" {
@@ -53,36 +59,53 @@ func main() {
 	}
 	log.SetFlags(log.LstdFlags)
 
-	// 3. Muat aturan CVE.
-	rules, err := waf.LoadRules(cfg.RulesFile)
+	// 3. Muat katalog signature.
+	catalog, err := waf.LoadCatalog(cfg.RulesFile)
 	if err != nil {
 		fatal("Gagal memuat aturan", err)
 	}
 
-	// 4. Statistik + WAF server.
+	// 4. Web ACL (tersimpan di data_dir bila diisi).
+	var aclPath string
+	if cfg.DataDir != "" {
+		aclPath = filepath.Join(cfg.DataDir, "webacl.json")
+	}
+	acls, err := webacl.NewStore(aclPath, catalog)
+	if err != nil {
+		fatal("Gagal memuat Web ACL", err)
+	}
+
+	// 5. Statistik + WAF server (plan awal dari Web ACL aktif).
 	st := stats.New()
-	wafServer, err := proxy.New(cfg, rules, st)
+	wafServer, err := proxy.New(cfg, acls.Plan(), st)
 	if err != nil {
 		fatal("Gagal menyiapkan proxy", err)
 	}
+	// Setiap perubahan Web ACL aktif langsung diterapkan ke mesin WAF tanpa restart.
+	acls.OnChange(wafServer.SetPlan)
 
-	log.Printf("Aturan dimuat : %d aturan (versi %s, update %s)", rules.Count(), rules.Version, rules.Updated)
+	log.Printf("Aturan dimuat : %d signature (versi %s, update %s)", catalog.Count(), catalog.Version, catalog.Updated)
+	log.Printf("Web ACL aktif : %s (%d signature)", acls.Active().Name, len(acls.Active().Rules))
 	log.Printf("Mode          : %s", cfg.Mode)
 	log.Printf("Melindungi    : %s", cfg.Backend)
 	log.Printf("Mendengarkan  : http://%s", cfg.Listen)
 
-	// 5. Jalankan dashboard (jika aktif) di goroutine terpisah.
+	// 6. Jalankan konsol (jika aktif) di goroutine terpisah.
 	if cfg.Dashboard.Enabled {
-		dash := dashboard.New(st, rules, cfg.Dashboard.Password, cfg.Mode)
+		dash := dashboard.New(dashboard.Deps{
+			Stats: st, Catalog: catalog, ACLs: acls, Banner: wafServer.Banner(),
+			Config: cfg, Password: cfg.Dashboard.Password, AppVersion: version,
+			Mode: wafServer.Mode, SetMode: wafServer.SetMode,
+		})
 		go func() {
-			log.Printf("Dashboard     : http://%s  (user: admin)", cfg.Dashboard.Listen)
+			log.Printf("Konsol        : http://%s  (user: admin)", cfg.Dashboard.Listen)
 			srv := &http.Server{
 				Addr:              cfg.Dashboard.Listen,
 				Handler:           dash.Handler(),
 				ReadHeaderTimeout: 5 * time.Second,
 			}
 			if err := srv.ListenAndServe(); err != nil {
-				log.Printf("[dashboard] berhenti: %v", err)
+				log.Printf("[konsol] berhenti: %v", err)
 			}
 		}()
 	}

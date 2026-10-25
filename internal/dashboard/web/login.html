@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Sign in · ExactusWAF Console</title>
+  <link rel="icon" href="/assets/favicon.svg">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/theme.js"></script>
+</head>
+<body class="login-body">
+  <button type="button" id="themeToggle" class="login-theme" aria-label="Toggle theme">
+    <svg class="t-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>
+    <svg class="t-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/></svg>
+  </button>
+
+  <main class="login-card">
+    <div class="login-brand">
+      <span class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5.5c0 4.4 3 8.3 7 9.5 4-1.2 7-5.1 7-9.5V6z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg></span>
+      <span><b>ExactusWAF</b><small>Console</small></span>
+    </div>
+    <h1>Sign in to the Console</h1>
+    <p class="lead">Manage Web ACLs and monitor attacks in real time.</p>
+
+    {{if .Error}}<div class="login-alert err" role="alert"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 7.5v5M12 16.5h.01"/></svg><span>{{.Error}}</span></div>{{end}}
+    {{if .Info}}<div class="login-alert inf" role="status"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 11v5.5M12 7.5h.01"/></svg><span>{{.Info}}</span></div>{{end}}
+
+    <form method="post" action="/login" id="loginForm" autocomplete="on">
+      <div class="login-field">
+        <label for="username">Username</label>
+        <div class="login-ic">
+          <svg class="pre" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c.8-3.6 4-5.5 8-5.5s7.2 1.9 8 5.5"/></svg>
+          <input id="username" name="username" value="{{.Username}}" placeholder="admin" autocomplete="username" autocapitalize="none" spellcheck="false" required {{if not .Username}}autofocus{{end}}>
+        </div>
+      </div>
+      <div class="login-field">
+        <label for="password">Password</label>
+        <div class="login-ic">
+          <svg class="pre" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          <input id="password" name="password" type="password" placeholder="Enter password" autocomplete="current-password" required {{if .Username}}autofocus{{end}}>
+          <button type="button" class="eye" id="eye" aria-label="Show password" aria-pressed="false">
+            <svg class="i-show" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="i-hide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18"/><path d="M10.6 5.1A10.4 10.4 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.1 4.1M6.6 6.6C3.9 8.4 2 12 2 12s3.6 7 10 7a9.7 9.7 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+          </button>
+        </div>
+      </div>
+      <p class="login-caps" id="caps" hidden>Caps Lock is on</p>
+      <button type="submit" class="login-btn" id="submit"><span class="spin" id="spin" hidden></span><span id="submitText">Sign in</span></button>
+    </form>
+
+    <p class="login-hint">Forgot your password? See <code>dashboard.password</code> in the config file (<code>config.yaml</code>, or <code>docker\config.yaml</code> for Docker).</p>
+  </main>
+  <p class="login-foot">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+    Login session lasts 12 hours · ExactusWAF v{{.Version}}
+  </p>
+  <script src="/assets/login.js"></script>
+</body>
+</html>

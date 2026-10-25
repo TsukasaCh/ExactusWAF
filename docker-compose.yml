@@ -1,0 +1,38 @@
+# =====================================================================
+#  ExactusWAF dengan Docker (Windows container)
+#
+#  Jalankan        : docker compose up -d --build
+#  Ubah pengaturan : edit docker\config.yaml, lalu jalankan lagi perintah di atas
+#  Lihat log       : docker compose logs -f exactuswaf
+#  Hentikan        : docker compose down
+#
+#  Website (lewat WAF) : http://localhost:8080
+#  Dashboard           : klik dua kali Dashboard-ExactusWAF.bat
+#                        (user: admin, password di docker\config.yaml)
+# =====================================================================
+services:
+  exactuswaf:
+    build: .
+    image: exactuswaf:latest
+    container_name: exactuswaf
+    ports:
+      - "8080:8080"   # pintu masuk website, lewat WAF
+      # Port dashboard (9090) sengaja TIDAK dipublish: Docker di Windows tidak bisa
+      # membatasinya ke 127.0.0.1, jadi kalau dipublish dashboard terbuka ke jaringan.
+      # Dashboard tetap bisa dibuka dari komputer ini lewat IP container
+      # (Dashboard-ExactusWAF.bat mencarinya otomatis).
+    volumes:
+      # Menyimpan Web ACL buatan Anda agar tetap ada setelah container dibuat ulang.
+      - exactuswaf-data:C:\data
+    depends_on:
+      - example-site
+    restart: unless-stopped
+
+  # Website contoh agar WAF punya sesuatu untuk dilindungi.
+  # Untuk website asli Anda: hapus service ini, lalu ubah 'backend' di docker\config.yaml.
+  example-site:
+    image: mcr.microsoft.com/dotnet/samples:aspnetapp
+    restart: unless-stopped
+
+volumes:
+  exactuswaf-data:

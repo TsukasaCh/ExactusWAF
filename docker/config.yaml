@@ -1,0 +1,90 @@
+# =====================================================================
+#  ExactusWAF - File Konfigurasi untuk DOCKER
+#  Edit file ini, simpan, lalu jalankan:  docker compose up -d --build
+#  (file ini ikut dimasukkan ke dalam image saat build)
+#
+#  Bedanya dengan config.yaml biasa:
+#    - backend memakai nama service Docker, bukan 127.0.0.1
+#    - dashboard mendengarkan di 0.0.0.0 DI DALAM container; port-nya tidak
+#      dipublish, jadi hanya bisa dibuka dari komputer ini (lewat IP container)
+#    - log tampil lewat "docker compose logs", bukan ke file
+# =====================================================================
+
+# Alamat tempat ExactusWAF mendengarkan (di dalam container).
+listen: "0.0.0.0:8080"
+
+# Alamat website/aplikasi ASLI Anda yang ingin dilindungi.
+#   - Website di docker-compose.yml yang sama : http://<nama-service>:<port>
+#     (bawaan: website contoh "example-site" di port 8080)
+#   - Website di container lain / server lain : http://<ip-atau-host>:<port>
+backend: "http://example-site:8080"
+
+# Mode kerja WAF:
+#   block   = serangan diblokir (DISARANKAN untuk produksi)
+#   monitor = serangan hanya dicatat, tidak diblokir (untuk uji coba dulu)
+mode: "block"
+
+# ---- Dashboard (halaman pemantauan) ----
+dashboard:
+  enabled: true
+  # Harus 0.0.0.0 di dalam container. Aman: port 9090 tidak dipublish di
+  # docker-compose.yml, jadi tidak terjangkau dari jaringan luar.
+  listen: "0.0.0.0:9090"
+  # Ganti password ini! Login pakai user "admin".
+  password: "admin123"
+
+# ---- Pembatasan laju (anti-banjir permintaan / DoS ringan) ----
+rate_limit:
+  enabled: true
+  requests_per_minute: 120   # maksimal permintaan per IP per menit
+  burst: 30                  # lonjakan singkat yang diizinkan
+
+# ---- Daftar IP ----
+# IP di sini SELALU diblokir.
+ip_blocklist: []
+# IP di sini SELALU diizinkan (tidak pernah kena filter). Mis. IP kantor Anda.
+ip_allowlist: []
+
+# ---- Auto-Ban (blokir otomatis penyerang) ----
+# Penyerang yang mengulang serangan akan diblokir sementara secara otomatis.
+auto_ban:
+  enabled: true
+  max_strikes: 5        # setelah 5 serangan...
+  window_minutes: 10    # ...dalam 10 menit...
+  ban_minutes: 60       # ...pelanggar diblokir selama 60 menit.
+  # ip_ua = blokir kombinasi IP + jenis peramban (DISARANKAN, aman untuk CGNAT)
+  # ip    = blokir seluruh IP
+  scope: "ip_ua"
+
+# ---- Header proxy (X-Forwarded-For) ----
+# Setel true HANYA jika ExactusWAF berada DI BELAKANG reverse proxy tepercaya
+# (mis. Nginx, Cloudflare, Load Balancer). Bila tidak, BIARKAN false.
+trust_proxy_headers: false
+
+# ---- Notifikasi Telegram (opsional) ----
+notify:
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
+
+# ---- HTTPS (opsional) ----
+# Path sertifikat adalah path DI DALAM container (mis. C:\config\cert.pem
+# bila file diletakkan di folder docker\ ini).
+tls:
+  enabled: false
+  cert_file: ""
+  key_file: ""
+
+# ---- Rules / Aturan deteksi ----
+# Kosong = pakai aturan bawaan yang sudah tertanam di dalam image.
+rules_file: ""
+
+# ---- Log ----
+# Kosong = log tampil di "docker compose logs exactuswaf".
+log_file: ""
+
+# ---- Direktori data ----
+# Tempat menyimpan Web ACL buatan Anda agar tidak hilang saat container dibuat
+# ulang. Di Docker diarahkan ke volume "exactuswaf-data" (lihat docker-compose.yml).
+data_dir: "C:\\data"

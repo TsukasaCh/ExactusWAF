@@ -7,6 +7,12 @@ REM ====================================================================
 setlocal
 set "URL=http://localhost:9090"
 
+REM Bila ExactusWAF berjalan di Docker, dashboard dibuka lewat IP container
+REM (port dashboard sengaja tidak dipublish agar tidak terbuka ke jaringan).
+for /f "usebackq delims=" %%i in (`docker inspect -f "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" exactuswaf 2^>nul`) do (
+    if not "%%i"=="" set "URL=http://%%i:9090"
+)
+
 REM --- Coba Microsoft Edge (mode aplikasi) ---
 set "EDGE=%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"
 if exist "%EDGE%" (

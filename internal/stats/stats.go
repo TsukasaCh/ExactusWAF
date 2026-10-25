@@ -25,6 +25,7 @@ type Store struct {
 
 	TotalRequests uint64
 	TotalBlocked  uint64
+	TotalCounted  uint64
 	TotalAllowed  uint64
 	StartedAt     time.Time
 
@@ -33,8 +34,17 @@ type Store struct {
 	byIP       map[string]uint64
 	byRule     map[string]*RuleHit
 
+	buckets map[int64]*bucket // deret waktu per menit (kunci = unix menit)
+
 	recent []Event
 	max    int
+}
+
+// bucket menyimpan jumlah per menit untuk grafik lalu lintas.
+type bucket struct {
+	allowed uint64
+	blocked uint64
+	counted uint64
 }
 
 // RuleHit adalah rekap satu aturan yang pernah terpicu.
@@ -55,8 +65,29 @@ func New() *Store {
 		bySeverity: make(map[string]uint64),
 		byIP:       make(map[string]uint64),
 		byRule:     make(map[string]*RuleHit),
+		buckets:    make(map[int64]*bucket),
 		max:        200,
 	}
+}
+
+// bucketAt mengambil/membuat bucket untuk menit dari t (dipanggil saat s.mu terkunci).
+func (s *Store) bucketAt(t time.Time) *bucket {
+	key := t.Unix() / 60
+	b, ok := s.buckets[key]
+	if !ok {
+		b = &bucket{}
+		s.buckets[key] = b
+		// Buang bucket yang lebih tua dari ~2 jam agar peta tidak membengkak.
+		if len(s.buckets) > 160 {
+			cutoff := key - 150
+			for k := range s.buckets {
+				if k < cutoff {
+					delete(s.buckets, k)
+				}
+			}
+		}
+	}
+	return b
 }
 
 func (s *Store) IncRequest() {
@@ -68,14 +99,34 @@ func (s *Store) IncRequest() {
 func (s *Store) IncAllowed() {
 	s.mu.Lock()
 	s.TotalAllowed++
+	s.bucketAt(time.Now()).allowed++
 	s.mu.Unlock()
 }
 
-// RecordBlock mencatat sebuah event serangan.
+// enforced membedakan aksi yang benar-benar memblokir dari yang hanya dihitung.
+func enforced(action string) bool {
+	switch action {
+	case "blocked", "ip-blocked", "rate-limited", "auto-banned":
+		return true
+	}
+	return false
+}
+
+// RecordBlock mencatat sebuah event deteksi (blokir maupun hitung/pantau).
 func (s *Store) RecordBlock(e Event, category string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.TotalBlocked++
+	when := e.Time
+	if when.IsZero() {
+		when = time.Now()
+	}
+	if enforced(e.Action) {
+		s.TotalBlocked++
+		s.bucketAt(when).blocked++
+	} else {
+		s.TotalCounted++
+		s.bucketAt(when).counted++
+	}
 	if category != "" {
 		s.byCategory[category]++
 	}
@@ -107,6 +158,7 @@ func (s *Store) RecordBlock(e Event, category string) {
 type Snapshot struct {
 	TotalRequests uint64            `json:"total_requests"`
 	TotalBlocked  uint64            `json:"total_blocked"`
+	TotalCounted  uint64            `json:"total_counted"`
 	TotalAllowed  uint64            `json:"total_allowed"`
 	UptimeSeconds int64             `json:"uptime_seconds"`
 	ByCategory    map[string]uint64 `json:"by_category"`
@@ -114,6 +166,14 @@ type Snapshot struct {
 	TopIPs        []IPCount         `json:"top_ips"`
 	Rules         []RuleHit         `json:"rules"`
 	Recent        []Event           `json:"recent"`
+}
+
+// SeriesPoint adalah satu titik deret waktu per menit untuk grafik.
+type SeriesPoint struct {
+	TimeMs  int64  `json:"t"` // awal menit, unix milidetik (mudah dipakai di JS)
+	Allowed uint64 `json:"allowed"`
+	Blocked uint64 `json:"blocked"`
+	Counted uint64 `json:"counted"`
 }
 
 type IPCount struct {
@@ -158,6 +218,7 @@ func (s *Store) Snapshot() Snapshot {
 	return Snapshot{
 		TotalRequests: s.TotalRequests,
 		TotalBlocked:  s.TotalBlocked,
+		TotalCounted:  s.TotalCounted,
 		TotalAllowed:  s.TotalAllowed,
 		UptimeSeconds: int64(time.Since(s.StartedAt).Seconds()),
 		ByCategory:    cat,
@@ -166,6 +227,27 @@ func (s *Store) Snapshot() Snapshot {
 		Rules:         rules,
 		Recent:        recent,
 	}
+}
+
+// Series mengembalikan deret waktu per menit untuk n menit terakhir (termasuk
+// menit berjalan), menit paling lama di urutan awal. Menit tanpa data berisi nol.
+func (s *Store) Series(n int) []SeriesPoint {
+	if n <= 0 {
+		n = 60
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	nowMin := time.Now().Unix() / 60
+	out := make([]SeriesPoint, 0, n)
+	for i := n - 1; i >= 0; i-- {
+		key := nowMin - int64(i)
+		p := SeriesPoint{TimeMs: key * 60 * 1000}
+		if b, ok := s.buckets[key]; ok {
+			p.Allowed, p.Blocked, p.Counted = b.allowed, b.blocked, b.counted
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func topIPs(m map[string]uint64, n int) []IPCount {

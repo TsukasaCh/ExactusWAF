@@ -10,19 +10,24 @@ import (
 
 // Config adalah seluruh isi config.yaml.
 type Config struct {
-	Listen    string          `yaml:"listen"`
-	Backend   string          `yaml:"backend"`
-	Mode      string          `yaml:"mode"`
-	Dashboard DashboardConfig `yaml:"dashboard"`
-	RateLimit RateLimitConfig `yaml:"rate_limit"`
-	IPBlock   []string        `yaml:"ip_blocklist"`
-	IPAllow   []string        `yaml:"ip_allowlist"`
-	TLS               TLSConfig     `yaml:"tls"`
-	AutoBan           AutoBanConfig `yaml:"auto_ban"`
-	Notify            NotifyConfig  `yaml:"notify"`
-	TrustProxyHeaders bool          `yaml:"trust_proxy_headers"`
-	RulesFile         string        `yaml:"rules_file"`
-	LogFile           string        `yaml:"log_file"`
+	Listen            string          `yaml:"listen"`
+	Backend           string          `yaml:"backend"`
+	Mode              string          `yaml:"mode"`
+	Dashboard         DashboardConfig `yaml:"dashboard"`
+	RateLimit         RateLimitConfig `yaml:"rate_limit"`
+	IPBlock           []string        `yaml:"ip_blocklist"`
+	IPAllow           []string        `yaml:"ip_allowlist"`
+	TLS               TLSConfig       `yaml:"tls"`
+	AutoBan           AutoBanConfig   `yaml:"auto_ban"`
+	Notify            NotifyConfig    `yaml:"notify"`
+	TrustProxyHeaders bool            `yaml:"trust_proxy_headers"`
+	RulesFile         string          `yaml:"rules_file"`
+	LogFile           string          `yaml:"log_file"`
+	DataDir           string          `yaml:"data_dir"`
+
+	// Warnings diisi saat Load (mis. pengaturan yang diperbaiki otomatis). Bukan
+	// field YAML; dibaca oleh main untuk ditampilkan ke pengguna.
+	Warnings []string `yaml:"-"`
 }
 
 type DashboardConfig struct {
@@ -99,6 +104,13 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Dashboard.Enabled && c.Dashboard.Listen == "" {
 		c.Dashboard.Listen = "127.0.0.1:9090"
+	}
+	// Dashboard tanpa password tidak boleh membuat seluruh WAF gagal start
+	// (situs yang dilindungi ikut mati). Matikan dashboard-nya saja + beri peringatan.
+	if c.Dashboard.Enabled && c.Dashboard.Password == "" {
+		c.Dashboard.Enabled = false
+		c.Warnings = append(c.Warnings,
+			"dashboard dinonaktifkan karena 'dashboard.password' kosong - isi password lalu jalankan lagi")
 	}
 	if c.AutoBan.Enabled {
 		if c.AutoBan.MaxStrikes <= 0 {

@@ -7,13 +7,14 @@ import (
 	"strings"
 )
 
-// Match adalah hasil ketika sebuah aturan cocok dengan permintaan.
+// Match adalah hasil ketika sebuah signature cocok dengan permintaan.
 type Match struct {
 	RuleID   string
 	RuleName string
 	CVE      string
 	Severity string
 	Category string
+	Action   Action // aksi signature ini di Web ACL aktif (block/count)
 	Location string // di mana ditemukan: url/header/body
 	Evidence string // potongan teks yang memicu (dipangkas)
 }
@@ -21,54 +22,111 @@ type Match struct {
 // maxBodyInspect membatasi berapa banyak body yang diperiksa (mencegah boros memori).
 const maxBodyInspect = 512 * 1024 // 512 KB
 
-// Inspect memeriksa satu permintaan terhadap semua aturan.
-// Mengembalikan match pertama (paling relevan) atau nil bila bersih.
-// bodyBytes adalah isi body yang sudah dibaca oleh pemanggil.
-func (rs *RuleSet) Inspect(r *http.Request, bodyBytes []byte) *Match {
+// PlanSpec adalah satu baris rencana: signature mana, dengan aksi apa.
+type PlanSpec struct {
+	SignatureID string
+	Action      Action
+}
+
+// planEntry adalah signature terkompilasi + aksinya dalam satu Web ACL.
+type planEntry struct {
+	rule   *compiledRule
+	action Action
+}
+
+// Plan adalah rencana evaluasi untuk satu Web ACL aktif: daftar signature terurut
+// beserta aksinya. Plan bersifat read-only sehingga aman dipakai banyak goroutine.
+type Plan struct {
+	entries []planEntry
+}
+
+// BuildPlan menyusun Plan dari daftar PlanSpec. Signature yang tidak ada di
+// katalog diabaikan (dianggap sudah dibuang). Aksi kosong dianggap block.
+func (c *Catalog) BuildPlan(specs []PlanSpec) *Plan {
+	p := &Plan{}
+	for _, s := range specs {
+		cr, ok := c.byID[s.SignatureID]
+		if !ok {
+			continue
+		}
+		action := s.Action
+		if !ValidAction(action) {
+			action = ActionBlock
+		}
+		p.entries = append(p.entries, planEntry{rule: cr, action: action})
+	}
+	return p
+}
+
+// Len mengembalikan jumlah signature aktif dalam plan.
+func (p *Plan) Len() int { return len(p.entries) }
+
+// Decision adalah hasil evaluasi satu permintaan terhadap sebuah Plan.
+type Decision struct {
+	Block  *Match   // signature beraksi "block" pertama yang cocok (nil bila tidak ada)
+	Counts []*Match // signature beraksi "count" yang cocok sebelum block
+}
+
+// Matched true bila ada signature apa pun yang cocok.
+func (d Decision) Matched() bool { return d.Block != nil || len(d.Counts) > 0 }
+
+// requestTexts menyiapkan teks yang diperiksa dari sebuah permintaan: URL
+// (termasuk hasil decode berlapis), header, dan body.
+func requestTexts(r *http.Request, bodyBytes []byte) (url, headers, body string) {
 	rawURL := r.URL.RequestURI()
-	// Periksa URL dalam bentuk mentah DAN yang sudah di-decode (bahkan decode
-	// ganda), supaya payload ter-encode seperti %20/%252e tidak bisa mengelabui.
-	urlDecoded := rawURL
+	url = rawURL
 	if d, err := neturl.QueryUnescape(rawURL); err == nil {
-		urlDecoded += " " + d
+		url += " " + d
 		if d2, err := neturl.QueryUnescape(d); err == nil {
-			urlDecoded += " " + d2
+			url += " " + d2
 		}
 	}
+	return url, headerString(r), string(bodyBytes)
+}
 
-	headers := headerString(r)
-	body := string(bodyBytes)
-
-	for i := range rs.rules {
-		cr := &rs.rules[i]
-		switch cr.Target {
-		case "url":
-			if m := scan(cr, urlDecoded, "url"); m != nil {
-				return m
-			}
-		case "header":
-			if m := scan(cr, headers, "header"); m != nil {
-				return m
-			}
-		case "body":
-			if m := scan(cr, body, "body"); m != nil {
-				return m
-			}
-		default: // "all"
-			if m := scan(cr, urlDecoded, "url"); m != nil {
-				return m
-			}
-			if m := scan(cr, headers, "header"); m != nil {
-				return m
-			}
-			if body != "" {
-				if m := scan(cr, body, "body"); m != nil {
-					return m
-				}
-			}
+// Evaluate memeriksa permintaan terhadap semua signature dalam plan. Signature
+// beraksi "count" dicatat lalu evaluasi lanjut; signature beraksi "block"
+// pertama yang cocok menghentikan evaluasi (permintaan akan ditolak).
+func (p *Plan) Evaluate(r *http.Request, bodyBytes []byte) Decision {
+	urlText, headers, body := requestTexts(r, bodyBytes)
+	var dec Decision
+	for i := range p.entries {
+		e := &p.entries[i]
+		m := matchRule(e.rule, urlText, headers, body)
+		if m == nil {
+			continue
 		}
+		m.Action = e.action
+		if e.action == ActionBlock {
+			dec.Block = m
+			return dec
+		}
+		dec.Counts = append(dec.Counts, m)
 	}
-	return nil
+	return dec
+}
+
+// matchRule mencocokkan satu signature terhadap target yang relevan.
+func matchRule(cr *compiledRule, urlText, headers, body string) *Match {
+	switch cr.Target {
+	case "url":
+		return scan(cr, urlText, "url")
+	case "header":
+		return scan(cr, headers, "header")
+	case "body":
+		return scan(cr, body, "body")
+	default: // "all"
+		if m := scan(cr, urlText, "url"); m != nil {
+			return m
+		}
+		if m := scan(cr, headers, "header"); m != nil {
+			return m
+		}
+		if body != "" {
+			return scan(cr, body, "body")
+		}
+		return nil
+	}
 }
 
 func scan(cr *compiledRule, text, location string) *Match {

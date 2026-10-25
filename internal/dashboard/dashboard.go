@@ -1,71 +1,122 @@
-// Package dashboard menyajikan halaman pemantauan sederhana + API JSON.
+// Package dashboard menyajikan konsol web ExactusWAF: shell SPA, aset statis,
+// halaman login, dan API JSON yang dipakai konsol.
 package dashboard
 
 import (
-	"crypto/subtle"
-	"encoding/json"
+	"embed"
+	"html/template"
+	"io/fs"
 	"net/http"
 
+	"exactuswaf/internal/autoban"
+	"exactuswaf/internal/config"
 	"exactuswaf/internal/stats"
 	"exactuswaf/internal/waf"
+	"exactuswaf/internal/webacl"
 )
 
+// web berisi shell konsol, halaman login, dan aset statis (CSS/JS/ikon).
+//
+//go:embed web
+var webFS embed.FS
+
+// Deps adalah seluruh ketergantungan yang dibutuhkan konsol.
+type Deps struct {
+	Stats      *stats.Store
+	Catalog    *waf.Catalog
+	ACLs       *webacl.Store
+	Banner     *autoban.Banner
+	Config     *config.Config
+	Password   string
+	AppVersion string
+
+	// Mode dan SetMode disediakan oleh proxy agar mode bisa diubah dari konsol.
+	Mode    func() string
+	SetMode func(mode string) error
+}
+
 type Dashboard struct {
-	store    *stats.Store
-	rules    *waf.RuleSet
-	password string
-	mode     string
+	deps      Deps
+	password  string
+	sessions  *sessionStore
+	guard     *loginGuard
+	indexHTML []byte
+	loginTmpl *template.Template
+	assets    http.Handler
 }
 
-func New(store *stats.Store, rules *waf.RuleSet, password, mode string) *Dashboard {
-	return &Dashboard{store: store, rules: rules, password: password, mode: mode}
+func New(d Deps) *Dashboard {
+	index, err := webFS.ReadFile("web/index.html")
+	if err != nil {
+		panic("dashboard: index.html not found: " + err.Error())
+	}
+	login := template.Must(template.ParseFS(webFS, "web/login.html"))
+	assetFS, err := fs.Sub(webFS, "web/assets")
+	if err != nil {
+		panic("dashboard: assets folder not found: " + err.Error())
+	}
+	return &Dashboard{
+		deps:      d,
+		password:  d.Password,
+		sessions:  newSessionStore(),
+		guard:     newLoginGuard(),
+		indexHTML: index,
+		loginTmpl: login,
+		assets:    http.StripPrefix("/assets/", http.FileServer(http.FS(assetFS))),
+	}
 }
 
-// Handler mengembalikan http.Handler untuk dashboard.
+// Handler mengembalikan http.Handler untuk konsol.
 func (d *Dashboard) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", d.auth(d.handleIndex))
-	mux.HandleFunc("/api/stats", d.auth(d.handleStats))
-	return mux
+
+	// Aset statis (CSS/JS/ikon) — publik, tidak butuh login.
+	mux.Handle("GET /assets/", d.assets)
+
+	// Login / logout.
+	mux.HandleFunc("GET /login", d.handleLoginPage)
+	mux.HandleFunc("POST /login", d.handleLogin)
+	mux.HandleFunc("POST /logout", d.handleLogout)
+
+	// API (butuh login).
+	mux.HandleFunc("GET /api/meta", d.requireLoginAPI(d.handleMeta))
+	mux.HandleFunc("GET /api/stats", d.requireLoginAPI(d.handleStats))
+	mux.HandleFunc("GET /api/series", d.requireLoginAPI(d.handleSeries))
+	mux.HandleFunc("GET /api/signatures", d.requireLoginAPI(d.handleSignatures))
+	mux.HandleFunc("GET /api/webacls", d.requireLoginAPI(d.handleListACLs))
+	mux.HandleFunc("POST /api/webacls", d.requireLoginAPI(d.handleCreateACL))
+	mux.HandleFunc("GET /api/webacls/{id}", d.requireLoginAPI(d.handleGetACL))
+	mux.HandleFunc("PUT /api/webacls/{id}", d.requireLoginAPI(d.handleUpdateACL))
+	mux.HandleFunc("DELETE /api/webacls/{id}", d.requireLoginAPI(d.handleDeleteACL))
+	mux.HandleFunc("POST /api/webacls/{id}/activate", d.requireLoginAPI(d.handleActivateACL))
+	mux.HandleFunc("GET /api/shield", d.requireLoginAPI(d.handleShield))
+	mux.HandleFunc("POST /api/shield/unban", d.requireLoginAPI(d.handleUnban))
+	mux.HandleFunc("GET /api/settings", d.requireLoginAPI(d.handleSettings))
+	mux.HandleFunc("POST /api/mode", d.requireLoginAPI(d.handleSetMode))
+
+	// Shell konsol untuk semua rute lain (butuh login; routing sisi klien pakai hash).
+	mux.HandleFunc("GET /", d.requireLogin(d.handleIndex))
+
+	return secureHeaders(mux)
 }
 
-// auth adalah HTTP Basic Auth sederhana (user: admin).
-func (d *Dashboard) auth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		user, pass, ok := r.BasicAuth()
-		okUser := subtle.ConstantTimeCompare([]byte(user), []byte("admin")) == 1
-		okPass := subtle.ConstantTimeCompare([]byte(pass), []byte(d.password)) == 1
-		if !ok || !okUser || !okPass {
-			w.Header().Set("WWW-Authenticate", `Basic realm="ExactusWAF Dashboard"`)
-			http.Error(w, "Perlu login (user: admin)", http.StatusUnauthorized)
-			return
-		}
-		next(w, r)
-	}
-}
-
-func (d *Dashboard) handleStats(w http.ResponseWriter, r *http.Request) {
-	snap := d.store.Snapshot()
-	resp := struct {
-		stats.Snapshot
-		Mode        string `json:"mode"`
-		RulesCount  int    `json:"rules_count"`
-		RulesUpdate string `json:"rules_updated"`
-	}{
-		Snapshot:    snap,
-		Mode:        d.mode,
-		RulesCount:  d.rules.Count(),
-		RulesUpdate: d.rules.Updated,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+// secureHeaders menambahkan CSP dan header keamanan dasar ke setiap respons.
+func secureHeaders(next http.Handler) http.Handler {
+	const csp = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data:; connect-src 'self'; font-src 'self'; form-action 'self'; " +
+		"frame-ancestors 'none'; base-uri 'none'"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", csp)
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "same-origin")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (d *Dashboard) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(indexHTML))
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(d.indexHTML)
 }
