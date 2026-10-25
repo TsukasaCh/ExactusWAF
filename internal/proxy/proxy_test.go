@@ -262,3 +262,69 @@ func TestHostAndPortRouting(t *testing.T) {
 		t.Fatalf("port 8321 routed to %q, want C", b)
 	}
 }
+
+func TestWildcardRoutingAndPortRemoval(t *testing.T) {
+	beA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("A")) }))
+	defer beA.Close()
+	beB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("B")) }))
+	defer beB.Close()
+	beC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("C")) }))
+	defer beC.Close()
+	srv := newTestSrv(t, beA.URL)
+	srv.SetRoutes(beA.URL, []sites.Site{
+		{Name: "wild", Domains: []string{"*.example.com"}, Backend: beB.URL},
+		{Name: "portapp", Port: 8321, Backend: beC.URL},
+	})
+	get := func(host string, port int) (int, string) {
+		req := reqFrom("198.51.100.9")
+		req.Host = host
+		rec := httptest.NewRecorder()
+		srv.serve(rec, req, port)
+		return rec.Code, rec.Body.String()
+	}
+	if _, b := get("api.example.com", 0); b != "B" {
+		t.Fatalf("subdomain wildcard routed to %q, want B", b)
+	}
+	if _, b := get("example.com", 0); b != "A" {
+		t.Fatalf("bare domain should NOT match *.example.com, got %q want default A", b)
+	}
+	if _, b := get("x.local", 8321); b != "C" {
+		t.Fatalf("port 8321 routed to %q, want C", b)
+	}
+	// Remove all sites; the still-open port listener must now refuse (502), not
+	// leak the default backend.
+	srv.SetRoutes(beA.URL, nil)
+	if code, body := get("x.local", 8321); code != http.StatusBadGateway {
+		t.Fatalf("removed port app: got %d %q, want 502", code, body)
+	}
+}
+
+func TestIPv6CanonicalBlock(t *testing.T) {
+	be := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer be.Close()
+	srv := newTestSrv(t, be.URL)
+	srv.SetIPSets([]string{"2001:db8::1"}, nil) // stored canonical lowercase
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "[2001:DB8::1]:40000" // non-canonical uppercase form
+	rec := httptest.NewRecorder()
+	srv.serve(rec, req, 0)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-canonical IPv6 not blocked: got %d, want 403", rec.Code)
+	}
+}
+
+func TestClientIPUsesRightmostXFF(t *testing.T) {
+	cat, _ := waf.LoadCatalog("")
+	store, _ := webacl.NewStore("", cat)
+	srv, err := New(&config.Config{Backend: "http://127.0.0.1:1", Mode: "block", TrustProxyHeaders: true}, store.Plan(), stats.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	// Attacker spoofs 5.5.5.5 at the left; the trusted proxy appends the real peer.
+	req.Header.Set("X-Forwarded-For", "5.5.5.5, 203.0.113.9")
+	req.RemoteAddr = "10.0.0.1:1234"
+	if ip := srv.clientIP(req); ip != "203.0.113.9" {
+		t.Fatalf("clientIP = %q, want rightmost 203.0.113.9 (spoof-resistant)", ip)
+	}
+}

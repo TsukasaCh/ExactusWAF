@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"exactuswaf/internal/config"
@@ -21,6 +23,16 @@ import (
 	"exactuswaf/internal/waf"
 	"exactuswaf/internal/webacl"
 )
+
+// portNum extracts the numeric port from a "host:port" listen address (0 if none).
+func portNum(addr string) int {
+	_, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(p)
+	return n
+}
 
 // RunServer wires the catalog, Web ACL store, proxy and console together and
 // serves until the process is stopped. It blocks.
@@ -88,7 +100,13 @@ func RunServer(cfg *config.Config, appVersion string) error {
 	if cfg.DataDir != "" {
 		sitesPath = filepath.Join(cfg.DataDir, "sites.json")
 	}
-	siteStore, err := sites.NewStore(sitesPath)
+	// Reserve ExactusWAF's own ports so an app can't claim them and crash the
+	// process (its dedicated listener would collide with the WAF/console socket).
+	reserved := []int{portNum(cfg.Listen)}
+	if cfg.Dashboard.Enabled {
+		reserved = append(reserved, portNum(cfg.Dashboard.Listen))
+	}
+	siteStore, err := sites.NewStore(sitesPath, reserved...)
 	if err != nil {
 		return fmt.Errorf("gagal memuat daftar app: %w", err)
 	}

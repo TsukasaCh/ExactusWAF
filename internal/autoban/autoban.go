@@ -131,6 +131,8 @@ func (b *Banner) BanMinutes() int {
 	if b == nil {
 		return 0
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return int(b.banDur.Minutes())
 }
 

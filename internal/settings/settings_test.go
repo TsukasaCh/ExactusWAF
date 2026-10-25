@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -91,5 +92,29 @@ func TestUpdateIPSetsRejectsInvalid(t *testing.T) {
 	// A rejected update must not mutate state.
 	if len(s.Get().Blocklist) != 0 {
 		t.Fatal("state changed despite rejected update")
+	}
+}
+
+func TestPersistFailureRollsBack(t *testing.T) {
+	dir := t.TempDir()
+	// Make the settings "directory" actually a FILE, so MkdirAll/WriteFile fail.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(blocker, "sub", "settings.json") // parent is a file -> persist fails
+	s := &Store{path: path, cur: sanitize(Settings{Blocklist: []string{"1.1.1.1"}})}
+	var fired int
+	s.onChange = []func(Settings){func(Settings) { fired++ }}
+
+	if _, err := s.UpdateIPSets([]string{"2.2.2.2"}, nil); err == nil {
+		t.Fatal("expected persist failure to return an error")
+	}
+	// State must NOT have changed (no divergence, UI won't lie), and no OnChange.
+	if cur := s.Get(); len(cur.Blocklist) != 1 || cur.Blocklist[0] != "1.1.1.1" {
+		t.Fatalf("state not rolled back after persist failure: %v", cur.Blocklist)
+	}
+	if fired != 0 {
+		t.Fatalf("OnChange fired %d times on failed persist, want 0", fired)
 	}
 }

@@ -738,7 +738,7 @@ Pages.apps = async function () {
     close = modal(editing ? "Edit application" : "Add application",
       h("div", {},
         field("Name", name),
-        field("Domains (comma-separated)", domains),
+        field("Domains (comma-separated; wildcard like *.example.com allowed)", domains),
         field("Backend URL", backend),
         field("Dedicated port (optional)", port),
         h("p", { class: "muted", style: "margin:8px 0 0;font-size:13px",

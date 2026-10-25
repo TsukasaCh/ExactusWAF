@@ -78,15 +78,20 @@ func (m *ipMatcher) Contains(ip string) bool {
 	if m == nil {
 		return false
 	}
-	if m.exact[ip] {
+	// Match against the canonical form (settings stores canonicalized IPs), so a
+	// non-canonical IPv6 literal (uppercase / expanded) still matches.
+	pip := net.ParseIP(ip)
+	key := ip
+	if pip != nil {
+		key = pip.String()
+	}
+	if m.exact[key] {
 		return true
 	}
-	if len(m.cidrs) > 0 {
-		if pip := net.ParseIP(ip); pip != nil {
-			for _, n := range m.cidrs {
-				if n.Contains(pip) {
-					return true
-				}
+	if pip != nil {
+		for _, n := range m.cidrs {
+			if n.Contains(pip) {
+				return true
 			}
 		}
 	}
@@ -101,24 +106,38 @@ type backendProxy struct {
 	rp      *httputil.ReverseProxy
 }
 
+// wildcardRoute matches any subdomain of a base domain ("*.example.com" ->
+// suffix ".example.com").
+type wildcardRoute struct {
+	suffix string
+	bp     *backendProxy
+}
+
 // routeTable maps incoming requests to a backend: by dedicated listener port,
-// by Host header, or the default (config.Backend) catch-all.
+// by exact Host, by wildcard Host, or the default (config.Backend) catch-all.
 type routeTable struct {
 	byHost map[string]*backendProxy // exact lowercase host -> backend
+	wild   []wildcardRoute          // "*.example.com" subdomain matches
 	byPort map[int]*backendProxy    // dedicated listener port -> backend
 	def    *backendProxy            // fallback (the primary/default backend)
 }
 
 // pick chooses the backend for a request. listenerPort > 0 means the request
-// arrived on a site's dedicated port; 0 means the shared public listener.
+// arrived on a site's dedicated port: it serves ONLY that app, and returns nil
+// if the app is gone (so a stale listener never leaks the default backend).
+// listenerPort 0 is the shared public listener: exact host, then wildcard,
+// then the default catch-all.
 func (rt *routeTable) pick(host string, listenerPort int) *backendProxy {
 	if listenerPort > 0 {
-		if bp := rt.byPort[listenerPort]; bp != nil {
-			return bp
-		}
+		return rt.byPort[listenerPort] // nil = no app on this port anymore
 	}
 	if bp := rt.byHost[host]; bp != nil {
 		return bp
+	}
+	for _, wr := range rt.wild {
+		if strings.HasSuffix(host, wr.suffix) {
+			return wr.bp
+		}
 	}
 	return rt.def
 }
@@ -171,7 +190,12 @@ func buildRouteTable(defaultBackend string, list []sites.Site) (*routeTable, err
 		}
 		bp := &backendProxy{site: site.Name, backend: site.Backend, rp: rp}
 		for _, d := range site.Domains {
-			rt.byHost[strings.ToLower(d)] = bp
+			d = strings.ToLower(d)
+			if strings.HasPrefix(d, "*.") {
+				rt.wild = append(rt.wild, wildcardRoute{suffix: d[1:], bp: bp}) // "*.x.com" -> ".x.com"
+			} else {
+				rt.byHost[d] = bp
+			}
 		}
 		if site.Port > 0 {
 			rt.byPort[site.Port] = bp
@@ -333,6 +357,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, listenerPort int)
 	s.stats.IncRequest()
 	ip := s.clientIP(r)
 	route := s.routes.Load().pick(hostOnly(r.Host), listenerPort)
+	if route == nil {
+		// A dedicated-port app was removed but its listener is still open: refuse
+		// rather than silently forwarding this port to the default backend.
+		w.Header().Set("X-Blocked-By", "ExactusWAF")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("502 Bad Gateway - no application is configured for this port."))
+		return
+	}
 	// Attribute this request to its app for per-app stats. Assume blocked; the
 	// clean/allow paths flip it before forwarding.
 	blocked := true
@@ -529,7 +561,11 @@ func (s *Server) clientIP(r *http.Request) string {
 	if s.trustProxy {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
-			return strings.TrimSpace(parts[0])
+			// Use the RIGHTMOST entry: the IP appended by the immediate trusted
+			// proxy (e.g. nginx's $proxy_add_x_forwarded_for). Leftmost entries are
+			// client-supplied and spoofable, so a client could otherwise forge an
+			// allowlisted/blocklisted IP or frame someone for an auto-ban.
+			return strings.TrimSpace(parts[len(parts)-1])
 		}
 		if xr := r.Header.Get("X-Real-IP"); xr != "" {
 			return strings.TrimSpace(xr)

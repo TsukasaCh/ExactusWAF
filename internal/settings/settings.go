@@ -102,13 +102,15 @@ func (s *Store) UpdateShield(rl RateLimit, ab AutoBan) (Settings, error) {
 		return Settings{}, err
 	}
 	s.mu.Lock()
+	old := s.cur
 	s.cur.RateLimit = normalizeRateLimit(rl)
 	s.cur.AutoBan = normalizeAutoBan(ab)
-	out := clone(s.cur)
 	if err := s.persistLocked(); err != nil {
+		s.cur = old // roll back so memory, disk and the live proxy stay consistent
 		s.mu.Unlock()
 		return Settings{}, err
 	}
+	out := clone(s.cur)
 	subs := append([]func(Settings){}, s.onChange...)
 	s.mu.Unlock()
 	for _, fn := range subs {
@@ -129,13 +131,15 @@ func (s *Store) UpdateIPSets(block, allow []string) (Settings, error) {
 		return Settings{}, fmt.Errorf("allowlist: %w", err)
 	}
 	s.mu.Lock()
+	old := s.cur
 	s.cur.Blocklist = nb
 	s.cur.Allowlist = na
-	out := clone(s.cur)
 	if err := s.persistLocked(); err != nil {
+		s.cur = old // roll back so memory, disk and the live proxy stay consistent
 		s.mu.Unlock()
 		return Settings{}, err
 	}
+	out := clone(s.cur)
 	subs := append([]func(Settings){}, s.onChange...)
 	s.mu.Unlock()
 	for _, fn := range subs {

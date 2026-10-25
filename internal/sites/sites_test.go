@@ -85,3 +85,30 @@ func TestPersistAndReloadAndPorts(t *testing.T) {
 		t.Fatal("site not deleted")
 	}
 }
+
+func TestReservedPortRejected(t *testing.T) {
+	s, _ := NewStore("", 8080, 8991)
+	if _, err := s.Create(Site{Name: "a", Backend: "http://127.0.0.1:3000", Port: 8080}); err == nil {
+		t.Error("expected reserved WAF port 8080 to be rejected")
+	}
+	if _, err := s.Create(Site{Name: "b", Backend: "http://127.0.0.1:3000", Port: 8991}); err == nil {
+		t.Error("expected reserved console port 8991 to be rejected")
+	}
+	if _, err := s.Create(Site{Name: "c", Backend: "http://127.0.0.1:3000", Port: 8081}); err != nil {
+		t.Errorf("non-reserved port should be allowed: %v", err)
+	}
+}
+
+func TestWildcardDomainValidation(t *testing.T) {
+	s, _ := NewStore("")
+	// Leading wildcard OK.
+	if _, err := s.Create(Site{Name: "w", Backend: "http://127.0.0.1:3000", Domains: []string{"*.example.com"}}); err != nil {
+		t.Errorf("leading wildcard should be allowed: %v", err)
+	}
+	// Non-leading or multiple wildcards rejected.
+	for _, bad := range []string{"ab*c.com", "*.*.com", "foo.*.com"} {
+		if _, err := s.Create(Site{Name: "x" + bad, Backend: "http://127.0.0.1:3000", Domains: []string{bad}}); err == nil {
+			t.Errorf("expected wildcard %q to be rejected", bad)
+		}
+	}
+}

@@ -43,12 +43,20 @@ type Store struct {
 	path     string
 	sites    map[string]*Site
 	order    []string
+	reserved map[int]bool // ports ExactusWAF itself uses (WAF + console)
 	onChange func([]Site)
 }
 
 // NewStore loads sites.json from path if present, otherwise starts empty.
-func NewStore(path string) (*Store, error) {
-	s := &Store{path: path, sites: map[string]*Site{}}
+// reserved lists ports ExactusWAF itself binds (the public WAF port and the
+// console port); an app may not claim one of those as its dedicated port.
+func NewStore(path string, reserved ...int) (*Store, error) {
+	s := &Store{path: path, sites: map[string]*Site{}, reserved: map[int]bool{}}
+	for _, p := range reserved {
+		if p > 0 {
+			s.reserved[p] = true
+		}
+	}
 	if path == "" {
 		return s, nil
 	}
@@ -233,6 +241,9 @@ func (s *Store) validate(in Site, ignoreID string) (Site, error) {
 	if in.Port < 0 || in.Port > 65535 {
 		return Site{}, fmt.Errorf("port must be between 0 and 65535")
 	}
+	if in.Port != 0 && s.reserved[in.Port] {
+		return Site{}, fmt.Errorf("port %d is reserved by ExactusWAF (its public or console port)", in.Port)
+	}
 	if len(in.Domains) == 0 && in.Port == 0 {
 		return Site{}, fmt.Errorf("give the application at least one domain or a dedicated port")
 	}
@@ -297,6 +308,12 @@ func validateDomain(d string) error {
 	}
 	if len(d) > 253 {
 		return fmt.Errorf("domain %q is too long", d)
+	}
+	// A wildcard is only allowed as a leading label: "*.example.com".
+	if strings.Contains(d, "*") {
+		if !strings.HasPrefix(d, "*.") || strings.Count(d, "*") != 1 {
+			return fmt.Errorf("domain %q: a wildcard may only appear as a leading label, e.g. *.example.com", d)
+		}
 	}
 	for _, c := range d {
 		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '-' || c == '*' || c == '_') {
