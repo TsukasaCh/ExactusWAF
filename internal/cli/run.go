@@ -16,6 +16,7 @@ import (
 	"exactuswaf/internal/dashboard"
 	"exactuswaf/internal/proxy"
 	"exactuswaf/internal/settings"
+	"exactuswaf/internal/sites"
 	"exactuswaf/internal/stats"
 	"exactuswaf/internal/waf"
 	"exactuswaf/internal/webacl"
@@ -79,6 +80,25 @@ func RunServer(cfg *config.Config, appVersion string) error {
 		wafServer.SetIPSets(s.Blocklist, s.Allowlist)
 	})
 
+	// Multi-app routing: one WAF fronts many apps. The default backend
+	// (config.yaml) is the catch-all; extra apps (added from the console) route
+	// by Host and/or a dedicated port. Host routes apply live; new ports need a
+	// restart to open the socket.
+	var sitesPath string
+	if cfg.DataDir != "" {
+		sitesPath = filepath.Join(cfg.DataDir, "sites.json")
+	}
+	siteStore, err := sites.NewStore(sitesPath)
+	if err != nil {
+		return fmt.Errorf("gagal memuat daftar app: %w", err)
+	}
+	siteStore.OnChange(func(list []sites.Site) {
+		wafServer.SetRoutes(cfg.Backend, list)
+	})
+	if n := len(siteStore.List()); n > 0 {
+		log.Printf("Apps          : %d extra app(s) protected (plus the default backend)", n)
+	}
+
 	log.Printf("Rules loaded  : %d signatures (version %s, updated %s)", catalog.Count(), catalog.Version, catalog.Updated)
 	log.Printf("Active Web ACL: %s (%d signatures)", acls.Active().Name, len(acls.Active().Rules))
 	log.Printf("Mode          : %s", cfg.Mode)
@@ -88,7 +108,7 @@ func RunServer(cfg *config.Config, appVersion string) error {
 	if cfg.Dashboard.Enabled {
 		dash := dashboard.New(dashboard.Deps{
 			Stats: st, Catalog: catalog, ACLs: acls, Banner: wafServer.Banner(),
-			Config: cfg, Settings: setStore, Password: cfg.Dashboard.Password, AppVersion: appVersion,
+			Config: cfg, Settings: setStore, Sites: siteStore, Password: cfg.Dashboard.Password, AppVersion: appVersion,
 			Mode: wafServer.Mode, SetMode: wafServer.SetMode,
 		})
 		go func() {
@@ -96,6 +116,21 @@ func RunServer(cfg *config.Config, appVersion string) error {
 			srv := &http.Server{Addr: cfg.Dashboard.Listen, Handler: dash.Handler(), ReadHeaderTimeout: 5 * time.Second}
 			if err := srv.ListenAndServe(); err != nil {
 				log.Printf("[console] stopped: %v", err)
+			}
+		}()
+	}
+
+	// Dedicated per-port listeners for apps that route by port (not domain).
+	// Started from the persisted sites at boot; a newly added port needs a
+	// restart to open here.
+	for _, p := range siteStore.Ports() {
+		port := p
+		addr := fmt.Sprintf("0.0.0.0:%d", port)
+		go func() {
+			log.Printf("App listener  : http://%s (port-based app)", addr)
+			ps := &http.Server{Addr: addr, Handler: wafServer.PortHandler(port), ReadHeaderTimeout: 10 * time.Second}
+			if err := ps.ListenAndServe(); err != nil {
+				log.Printf("[app-listener %s] stopped: %v", addr, err)
 			}
 		}()
 	}

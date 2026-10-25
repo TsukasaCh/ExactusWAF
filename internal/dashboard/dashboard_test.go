@@ -12,6 +12,7 @@ import (
 
 	"exactuswaf/internal/config"
 	"exactuswaf/internal/settings"
+	"exactuswaf/internal/sites"
 	"exactuswaf/internal/stats"
 	"exactuswaf/internal/waf"
 	"exactuswaf/internal/webacl"
@@ -38,11 +39,15 @@ func newTestDash(t *testing.T) *Dashboard {
 	if err != nil {
 		t.Fatal(err)
 	}
+	siteStore, err := sites.NewStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
 	mode := "block"
 	return New(Deps{
 		Stats: stats.New(), Catalog: cat, ACLs: acls, Banner: nil,
 		Config:   &config.Config{Backend: "http://contoh:8080", Mode: "block", Listen: "0.0.0.0:8080"},
-		Settings: setStore,
+		Settings: setStore, Sites: siteStore,
 		Password: testPassword, AppVersion: "test",
 		Mode: func() string { return mode },
 		SetMode: func(m string) error {
@@ -389,5 +394,63 @@ func TestUpdateIPSets(t *testing.T) {
 	getJSON(t, h, c, "/api/ipsets", &sets)
 	if len(sets.Blocklist) != 2 {
 		t.Fatalf("state changed after rejected update: %+v", sets)
+	}
+}
+
+func TestSitesCRUD(t *testing.T) {
+	h := newTestHandler(t)
+	c := login(t, h)
+
+	// List starts with just the default catch-all.
+	var list struct {
+		DefaultBackend string `json:"default_backend"`
+		Sites          []struct {
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			IsDefault bool   `json:"is_default"`
+		} `json:"sites"`
+	}
+	getJSON(t, h, c, "/api/sites", &list)
+	if len(list.Sites) != 1 || !list.Sites[0].IsDefault {
+		t.Fatalf("expected only the default app, got %+v", list.Sites)
+	}
+
+	// Create a domain-based app.
+	rec := postJSON(t, h, c, http.MethodPost, "/api/sites",
+		`{"name":"shop","domains":["shop.example.com"],"backend":"http://127.0.0.1:3000","port":0}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create site: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	// Duplicate domain rejected.
+	if rec := postJSON(t, h, c, http.MethodPost, "/api/sites",
+		`{"name":"shop2","domains":["shop.example.com"],"backend":"http://127.0.0.1:3001","port":0}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate domain: got %d, want 400", rec.Code)
+	}
+
+	// Update it.
+	if rec := postJSON(t, h, c, http.MethodPut, "/api/sites/"+created.ID,
+		`{"name":"shop","domains":["shop.example.com","www.shop.example.com"],"backend":"http://127.0.0.1:3000","port":0}`); rec.Code != http.StatusOK {
+		t.Fatalf("update site: got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// Delete it.
+	rec = do(h, withCookie(func() *http.Request {
+		req := httptest.NewRequest(http.MethodDelete, "/api/sites/"+created.ID, strings.NewReader("{}"))
+		req.Header.Set("Origin", "http://"+req.Host)
+		return req
+	}(), c))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete site: got %d (%s)", rec.Code, rec.Body.String())
+	}
+	getJSON(t, h, c, "/api/sites", &list)
+	if len(list.Sites) != 1 {
+		t.Fatalf("after delete expected only default, got %+v", list.Sites)
 	}
 }

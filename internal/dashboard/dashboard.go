@@ -11,6 +11,7 @@ import (
 	"exactuswaf/internal/autoban"
 	"exactuswaf/internal/config"
 	"exactuswaf/internal/settings"
+	"exactuswaf/internal/sites"
 	"exactuswaf/internal/stats"
 	"exactuswaf/internal/waf"
 	"exactuswaf/internal/webacl"
@@ -29,6 +30,7 @@ type Deps struct {
 	Banner     *autoban.Banner
 	Config     *config.Config
 	Settings   *settings.Store
+	Sites      *sites.Store
 	Password   string
 	AppVersion string
 
@@ -98,6 +100,10 @@ func (d *Dashboard) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/ipsets", d.requireLoginAPI(d.handleUpdateIPSets))
 	mux.HandleFunc("GET /api/settings", d.requireLoginAPI(d.handleSettings))
 	mux.HandleFunc("POST /api/mode", d.requireLoginAPI(d.handleSetMode))
+	mux.HandleFunc("GET /api/sites", d.requireLoginAPI(d.handleListSites))
+	mux.HandleFunc("POST /api/sites", d.requireLoginAPI(d.handleCreateSite))
+	mux.HandleFunc("PUT /api/sites/{id}", d.requireLoginAPI(d.handleUpdateSite))
+	mux.HandleFunc("DELETE /api/sites/{id}", d.requireLoginAPI(d.handleDeleteSite))
 
 	// Shell konsol untuk semua rute lain (butuh login; routing sisi klien pakai hash).
 	mux.HandleFunc("GET /", d.requireLogin(d.handleIndex))

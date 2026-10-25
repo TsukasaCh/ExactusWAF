@@ -33,6 +33,7 @@ type Store struct {
 	bySeverity map[string]uint64
 	byIP       map[string]uint64
 	byRule     map[string]*RuleHit
+	bySite     map[string]*SiteStat // traffic per protected app
 
 	buckets map[int64]*bucket // deret waktu per menit (kunci = unix menit)
 
@@ -58,6 +59,12 @@ type RuleHit struct {
 	LastSeen time.Time `json:"last_seen"`
 }
 
+// SiteStat is per-app traffic (requests seen and requests blocked).
+type SiteStat struct {
+	Requests uint64 `json:"requests"`
+	Blocked  uint64 `json:"blocked"`
+}
+
 func New() *Store {
 	return &Store{
 		StartedAt:  time.Now(),
@@ -65,9 +72,39 @@ func New() *Store {
 		bySeverity: make(map[string]uint64),
 		byIP:       make(map[string]uint64),
 		byRule:     make(map[string]*RuleHit),
+		bySite:     make(map[string]*SiteStat),
 		buckets:    make(map[int64]*bucket),
 		max:        200,
 	}
+}
+
+// RecordSite attributes one request to a protected app.
+func (s *Store) RecordSite(site string, blocked bool) {
+	if site == "" {
+		site = "default"
+	}
+	s.mu.Lock()
+	st, ok := s.bySite[site]
+	if !ok {
+		st = &SiteStat{}
+		s.bySite[site] = st
+	}
+	st.Requests++
+	if blocked {
+		st.Blocked++
+	}
+	s.mu.Unlock()
+}
+
+// SiteStats returns a copy of per-app traffic keyed by app name.
+func (s *Store) SiteStats() map[string]SiteStat {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]SiteStat, len(s.bySite))
+	for k, v := range s.bySite {
+		out[k] = *v
+	}
+	return out
 }
 
 // bucketAt mengambil/membuat bucket untuk menit dari t (dipanggil saat s.mu terkunci).

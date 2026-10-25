@@ -15,6 +15,7 @@ const I = {
   acl: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5.5c0 4.4 3 8.3 7 9.5 4-1.2 7-5.1 7-9.5V6z"/></svg>',
   sig: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h7"/></svg>',
   ipset: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg>',
+  apps: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>',
   log: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M8 13h8M8 17h5"/></svg>',
   ban: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.3l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2.2-1.3L14 2h-4l-.4 2.5a7 7 0 0 0-2.2 1.3l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12a7 7 0 0 0 .1 1.3l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2.2 1.3L10 22h4l.4-2.5a7 7 0 0 0 2.2-1.3l2.3 1 2-3.4-2-1.5A7 7 0 0 0 19 12z"/></svg>',
@@ -297,6 +298,7 @@ function lineChart(points) {
 const NAV = [
   { sec: "WAF" },
   { href: "#/overview", icon: "dash", label: "Overview" },
+  { href: "#/apps", icon: "apps", label: "Applications" },
   { href: "#/web-acl", icon: "acl", label: "Web ACL" },
   { href: "#/signature", icon: "sig", label: "Signature" },
   { href: "#/ip-set", icon: "ipset", label: "IP sets" },
@@ -682,6 +684,86 @@ Pages.signature = async function (q) {
   apply();
 };
 
+/* ---- Applications (multi-site) ---- */
+Pages.apps = async function () {
+  setActiveNav("#/apps");
+  const host = h("div", {});
+  setPage(host, [{ label: "ExactusWAF" }, { label: "Applications" }]);
+  host.append(loading());
+  let data;
+  try { data = await API.get("/api/sites"); } catch (e) { host.textContent = ""; host.append(errBox(e)); return; }
+
+  async function reload() { data = await API.get("/api/sites"); render(); }
+
+  function routingCell(s) {
+    if (s.is_default) return h("span", { class: "muted", text: "Fallback (any host)" });
+    const parts = [];
+    if (s.domains && s.domains.length) parts.push(s.domains.join(", "));
+    if (s.port) parts.push("port " + s.port);
+    return h("span", { text: parts.join(" · ") || "—" });
+  }
+  function rowActions(s) {
+    return h("div", { class: "row-gap nowrap" },
+      h("button", { class: "btn small link", onclick: () => openEditor(s) }, "Edit"),
+      h("button", { class: "btn small link danger", "aria-label": "Delete " + s.name, onclick: () => del(s) }, ico("trash")));
+  }
+  function del(s) {
+    confirmModal("Delete application", 'Remove "' + s.name + '" from the WAF? Traffic to it will no longer be proxied.',
+      "Delete", true, async () => { await API.del("/api/sites/" + s.id); await reload(); flash("success", 'Application "' + s.name + '" removed.'); });
+  }
+  function openEditor(s) {
+    const editing = !!s;
+    const name = h("input", { class: "inp", value: editing ? s.name : "", maxlength: "64", placeholder: "e.g. shop", "data-testid": "site-name" });
+    const domains = h("input", { class: "inp", value: editing ? (s.domains || []).join(", ") : "", placeholder: "shop.example.com, www.shop.example.com" });
+    const backend = h("input", { class: "inp", value: editing ? s.backend : "", placeholder: "http://127.0.0.1:3000", "data-testid": "site-backend" });
+    const port = h("input", { class: "inp", type: "number", min: "0", max: "65535", value: editing && s.port ? String(s.port) : "", placeholder: "optional, e.g. 8081" });
+    let close;
+    const saveBtn = h("button", { class: "btn primary", "data-testid": "site-save", onclick: save }, ico("check"), editing ? "Save" : "Add application");
+    function resetBtn() { saveBtn.disabled = false; saveBtn.innerHTML = ""; saveBtn.append(ico("check"), document.createTextNode(editing ? "Save" : "Add application")); }
+    async function save() {
+      const body = {
+        name: name.value.trim(),
+        domains: domains.value.split(",").map((x) => x.trim()).filter(Boolean),
+        backend: backend.value.trim(),
+        port: port.value ? +port.value : 0,
+      };
+      saveBtn.disabled = true; saveBtn.textContent = "Saving…";
+      try {
+        const res = editing ? await API.put("/api/sites/" + s.id, body) : await API.post("/api/sites", body);
+        close(); await reload();
+        flash("success", editing ? "Application updated." : 'Application "' + body.name + '" added.');
+        if (res.port_needs_restart) flash("warning", "This app uses a dedicated port — restart ExactusWAF to open port " + body.port + ".");
+      } catch (e) { resetBtn(); flash("error", e.message); }
+    }
+    close = modal(editing ? "Edit application" : "Add application",
+      h("div", {},
+        field("Name", name),
+        field("Domains (comma-separated)", domains),
+        field("Backend URL", backend),
+        field("Dedicated port (optional)", port),
+        h("p", { class: "muted", style: "margin:8px 0 0;font-size:13px",
+          text: "Route by domain (Host header) and/or a dedicated port. Leave port empty for domain-only. The Web ACL, Shield and IP sets apply to every application." })),
+      [h("button", { class: "btn link", onclick: () => close() }, "Cancel"), saveBtn]);
+  }
+  function render() {
+    host.textContent = "";
+    const rows = data.sites;
+    const tbl = table(
+      [{ label: "Application", render: (s) => h("div", {}, h("b", { text: s.name }), s.is_default ? h("small", { class: "muted", text: "config.yaml backend" }) : null) },
+       { label: "Routing", render: (s) => routingCell(s) },
+       { label: "Backend", mono: true, render: (s) => h("span", { class: "mono", text: backendHost(s.backend) }) },
+       { label: "Requests", num: true, render: (s) => num(s.requests) },
+       { label: "Blocked", num: true, render: (s) => num(s.blocked) },
+       { label: "", render: (s) => s.is_default ? h("span", { class: "muted", text: "—" }) : rowActions(s) }],
+      rows);
+    host.append(
+      pageHead("Applications", "Every app this WAF protects. One WAF fronts them all and routes by domain and/or port; the Web ACL, Shield and IP sets apply to all of them.",
+        h("button", { class: "btn primary", "data-testid": "site-add", onclick: () => openEditor(null) }, ico("plus"), "Add application")),
+      container({ title: "Protected applications", count: rows.length, flush: true }, tbl));
+  }
+  render();
+};
+
 /* ---- IP sets (editable; single IP or CIDR) ---- */
 Pages["ip-set"] = async function () {
   setActiveNav("#/ip-set");
@@ -935,6 +1017,7 @@ async function route() {
   const p0 = parts[0] || "overview";
   try {
     if (p0 === "overview") return await Pages.ringkasan();
+    if (p0 === "apps") return await Pages.apps();
     if (p0 === "signature") return await Pages.signature(query);
     if (p0 === "ip-set") return await Pages["ip-set"]();
     if (p0 === "log") return await Pages.log();

@@ -10,6 +10,7 @@ import (
 
 	"exactuswaf/internal/config"
 	"exactuswaf/internal/dashboard"
+	"exactuswaf/internal/sites"
 	"exactuswaf/internal/stats"
 	"exactuswaf/internal/waf"
 	"exactuswaf/internal/webacl"
@@ -223,5 +224,41 @@ func TestRateLimitLiveToggle(t *testing.T) {
 	srv.ServeHTTP(r4, reqFrom("203.0.113.77"))
 	if r3.Code == http.StatusForbidden || r4.Code == http.StatusForbidden {
 		t.Fatalf("rate limit disabled but requests blocked: %d,%d", r3.Code, r4.Code)
+	}
+}
+
+func TestHostAndPortRouting(t *testing.T) {
+	backendA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("A")) }))
+	defer backendA.Close()
+	backendB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("B")) }))
+	defer backendB.Close()
+	backendC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("C")) }))
+	defer backendC.Close()
+
+	srv := newTestSrv(t, backendA.URL) // default backend = A
+	srv.SetRoutes(backendA.URL, []sites.Site{
+		{Name: "b", Domains: []string{"b.example.com"}, Backend: backendB.URL},
+		{Name: "c", Port: 8321, Backend: backendC.URL},
+	})
+
+	get := func(host string, port int) string {
+		req := reqFrom("198.51.100.5")
+		req.Host = host
+		rec := httptest.NewRecorder()
+		srv.serve(rec, req, port)
+		return rec.Body.String()
+	}
+	if b := get("b.example.com", 0); b != "B" {
+		t.Fatalf("host b.example.com routed to %q, want B", b)
+	}
+	if b := get("unknown.example.com", 0); b != "A" {
+		t.Fatalf("unknown host routed to %q, want default A", b)
+	}
+	if b := get("b.example.com:80", 0); b != "B" {
+		t.Fatalf("host with :port routed to %q, want B", b)
+	}
+	// Port listener: regardless of Host, port 8321 routes to C.
+	if b := get("b.example.com", 8321); b != "C" {
+		t.Fatalf("port 8321 routed to %q, want C", b)
 	}
 }

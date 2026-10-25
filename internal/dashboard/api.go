@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"exactuswaf/internal/settings"
+	"exactuswaf/internal/sites"
 	"exactuswaf/internal/stats"
 	"exactuswaf/internal/waf"
 	"exactuswaf/internal/webacl"
@@ -348,6 +349,86 @@ func (d *Dashboard) handleUnban(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(in.Key) == "" || !d.deps.Banner.Unban(in.Key) {
 		writeErr(w, http.StatusBadRequest, "Ban not found or already expired.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// ---- Applications (multi-site) ----
+
+type siteView struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Domains   []string `json:"domains"`
+	Backend   string   `json:"backend"`
+	Port      int      `json:"port"`
+	Requests  uint64   `json:"requests"`
+	Blocked   uint64   `json:"blocked"`
+	IsDefault bool     `json:"is_default"`
+	CreatedAt string   `json:"created_at,omitempty"`
+	UpdatedAt string   `json:"updated_at,omitempty"`
+}
+
+func (d *Dashboard) handleListSites(w http.ResponseWriter, r *http.Request) {
+	traffic := d.deps.Stats.SiteStats()
+	// The default backend (config.yaml) is the catch-all app, shown first.
+	def := traffic["default"]
+	out := []siteView{{
+		Name: "Default (catch-all)", Backend: d.deps.Config.Backend,
+		Requests: def.Requests, Blocked: def.Blocked, IsDefault: true, Domains: []string{},
+	}}
+	for _, s := range d.deps.Sites.List() {
+		t := traffic[s.Name]
+		out = append(out, siteView{
+			ID: s.ID, Name: s.Name, Domains: nonNil(s.Domains), Backend: s.Backend, Port: s.Port,
+			Requests: t.Requests, Blocked: t.Blocked,
+			CreatedAt: s.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			UpdatedAt: s.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"default_backend": d.deps.Config.Backend, "sites": out})
+}
+
+type siteInput struct {
+	Name    string   `json:"name"`
+	Domains []string `json:"domains"`
+	Backend string   `json:"backend"`
+	Port    int      `json:"port"`
+}
+
+func (d *Dashboard) handleCreateSite(w http.ResponseWriter, r *http.Request) {
+	var in siteInput
+	if !d.readJSON(w, r, &in) {
+		return
+	}
+	s, err := d.deps.Sites.Create(sites.Site{Name: in.Name, Domains: in.Domains, Backend: in.Backend, Port: in.Port})
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": s.ID, "port_needs_restart": s.Port > 0})
+}
+
+func (d *Dashboard) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
+	var in siteInput
+	if !d.readJSON(w, r, &in) {
+		return
+	}
+	s, err := d.deps.Sites.Update(r.PathValue("id"), sites.Site{Name: in.Name, Domains: in.Domains, Backend: in.Backend, Port: in.Port})
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": s.ID, "port_needs_restart": s.Port > 0})
+}
+
+func (d *Dashboard) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeErr(w, http.StatusForbidden, "Request rejected (cross-site).")
+		return
+	}
+	if err := d.deps.Sites.Delete(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

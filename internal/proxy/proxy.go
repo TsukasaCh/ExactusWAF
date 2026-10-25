@@ -22,6 +22,7 @@ import (
 	"exactuswaf/internal/dashboard"
 	"exactuswaf/internal/notify"
 	"exactuswaf/internal/ratelimit"
+	"exactuswaf/internal/sites"
 	"exactuswaf/internal/stats"
 	"exactuswaf/internal/waf"
 )
@@ -35,7 +36,9 @@ type Server struct {
 	banner    *autoban.Banner
 	notifier  *notify.Notifier
 	stats     *stats.Store
-	proxy     *httputil.ReverseProxy
+	// Tabel rute multi-situs: satu WAF bisa melindungi banyak app (route by
+	// Host dan/atau port). Diganti tanpa restart (atomic).
+	routes atomic.Pointer[routeTable]
 	// Daftar IP blok/izin; diganti tanpa restart (atomic) + sadar CIDR.
 	blockIPs   atomic.Pointer[ipMatcher]
 	allowIPs   atomic.Pointer[ipMatcher]
@@ -90,13 +93,44 @@ func (m *ipMatcher) Contains(ip string) bool {
 	return false
 }
 
-// New membuat Server WAF dengan plan Web ACL awal.
-func New(cfg *config.Config, plan *waf.Plan, st *stats.Store) (*Server, error) {
-	target, err := url.Parse(cfg.Backend)
+// backendProxy is a reverse proxy to one site's backend, tagged with the site
+// name for stats and logging.
+type backendProxy struct {
+	site    string
+	backend string
+	rp      *httputil.ReverseProxy
+}
+
+// routeTable maps incoming requests to a backend: by dedicated listener port,
+// by Host header, or the default (config.Backend) catch-all.
+type routeTable struct {
+	byHost map[string]*backendProxy // exact lowercase host -> backend
+	byPort map[int]*backendProxy    // dedicated listener port -> backend
+	def    *backendProxy            // fallback (the primary/default backend)
+}
+
+// pick chooses the backend for a request. listenerPort > 0 means the request
+// arrived on a site's dedicated port; 0 means the shared public listener.
+func (rt *routeTable) pick(host string, listenerPort int) *backendProxy {
+	if listenerPort > 0 {
+		if bp := rt.byPort[listenerPort]; bp != nil {
+			return bp
+		}
+	}
+	if bp := rt.byHost[host]; bp != nil {
+		return bp
+	}
+	return rt.def
+}
+
+// newReverseProxy builds a reverse proxy to backendURL with ExactusWAF's shared
+// director (preserve client Host, strip the dashboard session cookie) and a
+// friendly 502 page.
+func newReverseProxy(backendURL string) (*httputil.ReverseProxy, error) {
+	target, err := url.Parse(backendURL)
 	if err != nil {
 		return nil, err
 	}
-
 	rp := httputil.NewSingleHostReverseProxy(target)
 	origDirector := rp.Director
 	rp.Director = func(r *http.Request) {
@@ -109,17 +143,55 @@ func New(cfg *config.Config, plan *waf.Plan, st *stats.Store) (*Server, error) {
 		stripCookie(r.Header, dashboard.SessionCookie)
 	}
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		log.Printf("[proxy] gagal menghubungi backend %s: %v", cfg.Backend, err)
+		log.Printf("[proxy] could not reach backend %s: %v", backendURL, err)
 		w.WriteHeader(http.StatusBadGateway)
-		_, _ = w.Write([]byte("502 Bad Gateway - ExactusWAF tidak dapat menghubungi website asli. Cek apakah backend berjalan."))
+		_, _ = w.Write([]byte("502 Bad Gateway - ExactusWAF could not reach the upstream application."))
 	}
+	return rp, nil
+}
 
+// buildRouteTable constructs a route table from a default backend + the sites.
+// Invalid site backends are skipped (logged) so one bad entry can't take the
+// whole WAF down.
+func buildRouteTable(defaultBackend string, list []sites.Site) (*routeTable, error) {
+	defRP, err := newReverseProxy(defaultBackend)
+	if err != nil {
+		return nil, err
+	}
+	rt := &routeTable{
+		byHost: map[string]*backendProxy{},
+		byPort: map[int]*backendProxy{},
+		def:    &backendProxy{site: "default", backend: defaultBackend, rp: defRP},
+	}
+	for _, site := range list {
+		rp, err := newReverseProxy(site.Backend)
+		if err != nil {
+			log.Printf("[proxy] skipping app %q: bad backend %q: %v", site.Name, site.Backend, err)
+			continue
+		}
+		bp := &backendProxy{site: site.Name, backend: site.Backend, rp: rp}
+		for _, d := range site.Domains {
+			rt.byHost[strings.ToLower(d)] = bp
+		}
+		if site.Port > 0 {
+			rt.byPort[site.Port] = bp
+		}
+	}
+	return rt, nil
+}
+
+// New membuat Server WAF dengan plan Web ACL awal.
+func New(cfg *config.Config, plan *waf.Plan, st *stats.Store) (*Server, error) {
+	rt, err := buildRouteTable(cfg.Backend, nil)
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
 		cfg:        cfg,
 		stats:      st,
-		proxy:      rp,
 		trustProxy: cfg.TrustProxyHeaders,
 	}
+	s.routes.Store(rt)
 	s.blockIPs.Store(newIPMatcher(cfg.IPBlock))
 	s.allowIPs.Store(newIPMatcher(cfg.IPAllow))
 	scope := cfg.AutoBan.Scope
@@ -159,6 +231,17 @@ func (s *Server) SetPlan(p *waf.Plan) {
 		p = &waf.Plan{}
 	}
 	s.plan.Store(p)
+}
+
+// SetRoutes membangun ulang tabel rute dari backend default + daftar situs.
+// Rute berbasis Host berlaku langsung; port baru butuh listener baru (restart).
+func (s *Server) SetRoutes(defaultBackend string, list []sites.Site) {
+	rt, err := buildRouteTable(defaultBackend, list)
+	if err != nil {
+		log.Printf("[proxy] could not rebuild routes: %v", err)
+		return
+	}
+	s.routes.Store(rt)
 }
 
 // SetIPSets mengganti daftar IP blok/izin tanpa restart (dipanggil saat admin
@@ -234,16 +317,33 @@ func stripCookie(h http.Header, name string) {
 	}
 }
 
-// ServeHTTP adalah handler utama untuk semua permintaan masuk.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+// ServeHTTP menangani permintaan dari listener publik bersama (:80/:443),
+// routing berdasarkan Host.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.serve(w, r, 0) }
+
+// PortHandler mengembalikan handler untuk listener port khusus sebuah app:
+// semua permintaan di port itu diteruskan ke backend app tersebut.
+func (s *Server) PortHandler(port int) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.serve(w, r, port) })
+}
+
+// serve adalah pipeline WAF utama. listenerPort>0 berarti permintaan datang dari
+// port khusus sebuah app; 0 berarti listener publik bersama (route by Host).
+func (s *Server) serve(w http.ResponseWriter, r *http.Request, listenerPort int) {
 	s.stats.IncRequest()
 	ip := s.clientIP(r)
+	route := s.routes.Load().pick(hostOnly(r.Host), listenerPort)
+	// Attribute this request to its app for per-app stats. Assume blocked; the
+	// clean/allow paths flip it before forwarding.
+	blocked := true
+	defer func() { s.stats.RecordSite(route.site, blocked) }()
 
 	// 1. IP allowlist -> lewati semua pemeriksaan.
 	if s.allowIPs.Load().Contains(ip) {
+		blocked = false
 		s.stats.IncAllowed()
 		setForwarded(r, ip)
-		s.proxy.ServeHTTP(w, r)
+		route.rp.ServeHTTP(w, r)
 		return
 	}
 
@@ -315,10 +415,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			r.Method, r.URL.Path, ip, dec.Block.RuleName, dec.Block.RuleID, dec.Block.Evidence)
 	}
 
-	// 6. Bersih -> teruskan ke backend.
+	// 6. Bersih -> teruskan ke backend app yang cocok.
+	blocked = false
 	s.stats.IncAllowed()
 	setForwarded(r, ip)
-	s.proxy.ServeHTTP(w, r)
+	route.rp.ServeHTTP(w, r)
+}
+
+// hostOnly mengambil hostname tanpa port, huruf kecil.
+func hostOnly(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return ""
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
 }
 
 // setForwarded memberi tahu backend IP & skema asli klien (penting saat
