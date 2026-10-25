@@ -311,20 +311,27 @@ func (s *Server) deny(w http.ResponseWriter, r *http.Request, ip string, ev stat
 }
 
 func blockPage(reason, ruleID string) string {
-	return `<!doctype html><html lang="id"><head><meta charset="utf-8">
+	_ = reason // kept for signature compatibility; the page stays intentionally generic
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Diblokir - ExactusWAF</title>
-<style>body{font-family:system-ui,Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;
-display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
-.card{background:#1e293b;padding:40px;border-radius:16px;max-width:460px;text-align:center;
-box-shadow:0 20px 60px rgba(0,0,0,.4)}h1{color:#f87171;margin:0 0 8px}
-.id{font-family:monospace;color:#94a3b8;font-size:13px;margin-top:16px}
-.shield{font-size:48px}</style></head>
-<body><div class="card"><div class="shield">🛡️</div>
-<h1>Akses Diblokir</h1><p>` + reason + `</p>
-<p style="color:#94a3b8;font-size:14px">Permintaan Anda terdeteksi berpotensi berbahaya dan
-dihentikan oleh ExactusWAF.</p>
-<div class="id">Ref: ` + ruleID + `</div></div></body></html>`
+<title>403 Forbidden</title>
+<style>html{color-scheme:light dark}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+background:#fff;color:#1a1a1a}
+@media (prefers-color-scheme:dark){body{background:#0f1115;color:#e6e6e6}}
+.box{text-align:center;padding:24px;max-width:420px}
+.code{font-size:56px;font-weight:700;letter-spacing:-1px;line-height:1;margin:0}
+h1{font-size:18px;font-weight:600;margin:8px 0 10px}
+p{margin:0;font-size:14px;line-height:1.5;color:#6b7280}
+.ref{margin-top:20px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+font-size:12px;color:#9ca3af}</style></head>
+<body><div class="box">
+<p class="code">403</p>
+<h1>Forbidden</h1>
+<p>Your request was blocked for security reasons.</p>
+<p class="ref">Reference ID: ` + ruleID + `</p>
+</div></body></html>`
 }
 
 // clientIP mengambil IP asli klien.
